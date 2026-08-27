@@ -82,13 +82,18 @@ struct ContentView: View {
 
     @ViewBuilder
     var body: some View {
+        notchContent
+    }
+
+    @ViewBuilder
+    private var notchContent: some View {
         // Calculate scale based on gesture progress only
         let gestureScale: CGFloat = {
             guard gestureProgress != 0 else { return 1.0 }
             let scaleFactor = 1.0 + gestureProgress * 0.01
             return max(0.6, scaleFactor)
         }()
-        
+
         ZStack(alignment: .top) {
             VStack(spacing: 0) {
                 let mainLayout = NotchLayout()
