@@ -11,6 +11,7 @@ import Foundation
 import Combine
 import Defaults
 import AppKit
+import SwiftUI
 
 // MARK: - Session model
 

@@ -130,7 +130,7 @@ struct AIAgentFullView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
-        vm.sendPrompt(text)
+        Task { await vm.sendPrompt(text) }
     }
 }
 
@@ -203,9 +203,9 @@ private struct PermissionCardFull: View {
                     .foregroundStyle(AgentPalette.paperSecondary)
             }
             HStack(spacing: 10) {
-                Button("Approve") { vm.approve(request) }
+                Button("Approve") { vm.approve(permission: request) }
                     .buttonStyle(.borderedProminent)
-                Button("Always") { vm.approve(request, always: true) }
+                Button("Always") { vm.approve(permission: request, always: true) }
                     .buttonStyle(.bordered)
                 Button("Deny") { vm.deny(request) }
                     .buttonStyle(.bordered)
@@ -239,7 +239,7 @@ private struct QuestionCardFull: View {
                         HStack(spacing: 8) {
                             ForEach(q.options) { opt in
                                 Button {
-                                    vm.answer(request, answers: [[opt.label]])
+                                    vm.answer(question: request, answers: [[opt.label]])
                                 } label: {
                                     Text(opt.label)
                                         .font(.callout.weight(.medium))
@@ -273,6 +273,6 @@ private struct QuestionCardFull: View {
         let text = customAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         customAnswer = ""
-        vm.answer(request, answers: [[text]])
+        vm.answer(question: request, answers: [[text]])
     }
 }

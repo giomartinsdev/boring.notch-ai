@@ -19,8 +19,8 @@ import AppKit
 final class AgentBridgeConnection {
     let fd: Int32
     private var writeLock = NSLock()
-    private(set) var instanceID: String?
-    private(set) var lastSeen = Date()
+    var instanceID: String?
+    var lastSeen = Date()
 
     init(fd: Int32) {
         self.fd = fd
@@ -128,10 +128,10 @@ final class AgentBridgeServer: @unchecked Sendable {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let ok = path.withCString { cstr -> Bool in
-            withUnsafeBytes(of: &addr) { raw in
-                let dst = UnsafeMutableRawBufferPointer(rebasing: raw.prefix(Darwin.sun_path.max))
-                let len = min(dst.count, Int(strlen(cstr)) + 1)
-                dst.copyMemory(from: UnsafeRawBufferPointer(cstr, count: len))
+            withUnsafeMutableBytes(of: &addr) { raw in
+                let maxLen = MemoryLayout<sockaddr_un>.size - MemoryLayout<sa_family_t>.size
+                let len = min(raw.count, maxLen, Int(strlen(cstr)) + 1)
+                raw.copyMemory(from: UnsafeRawBufferPointer(cstr, count: len))
                 return true
             }
         }
@@ -204,7 +204,7 @@ final class AgentBridgeServer: @unchecked Sendable {
         var yes: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
         // 1h idle timeout — held permissions may sit for a long time
-        let timeout = timeval(tv_sec: 3700, tv_usec: 0)
+        var timeout = timeval(tv_sec: 3700, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 
@@ -272,11 +272,11 @@ final class AgentBridgeServer: @unchecked Sendable {
             lastSeen: Date())
 
         conn.instanceID = instanceID
-        channelsLock.lock()
-        channels[instanceID] = conn
-        instances[instanceID] = info
-        let count = channels.count
-        channelsLock.unlock()
+        let count = channelsLock.withLock {
+            channels[instanceID] = conn
+            instances[instanceID] = info
+            return channels.count
+        }
 
         Task { @MainActor [weak delegate] in
             delegate?.bridge(didRegisterInstance: info)
@@ -342,19 +342,19 @@ final class AgentBridgeServer: @unchecked Sendable {
 
     private func handleDisconnect(_ conn: AgentBridgeConnection) {
         guard let instanceID = conn.instanceID else { return }
-        channelsLock.lock()
-        let wasCurrent = channels[instanceID] === conn
-        if wasCurrent {
-            channels.removeValue(forKey: instanceID)
-            instances.removeValue(forKey: instanceID)
+        let (wasCurrent, count) = channelsLock.withLock {
+            let wasCurrent = channels[instanceID] === conn
+            if wasCurrent {
+                channels.removeValue(forKey: instanceID)
+                instances.removeValue(forKey: instanceID)
+            }
+            return (wasCurrent, channels.count)
         }
-        let count = channels.count
-        channelsLock.unlock()
 
         // Any held requests from this connection can never be answered.
-        heldLock.lock()
-        heldRepliers = heldRepliers.filter { _, _ in !wasCurrent || true }
-        heldLock.unlock()
+        heldLock.withLock {
+            heldRepliers = heldRepliers.filter { _, _ in !wasCurrent || true }
+        }
 
         if wasCurrent {
             Task { @MainActor [weak delegate] in
@@ -369,10 +369,10 @@ final class AgentBridgeServer: @unchecked Sendable {
 
     /// Sends a directive answering a held permission/question request.
     func respond(to requestID: String, directive: AgentDirective) {
-        heldLock.lock()
-        let replier = heldRepliers.removeValue(forKey: requestID)
-        heldLock.unlock()
-        replier?(directive)
+        heldLock.withLock {
+            let replier = heldRepliers.removeValue(forKey: requestID)
+            replier?(directive)
+        }
     }
 
     /// Runs a REST call on the given OpenCode instance through its plugin
@@ -384,18 +384,14 @@ final class AgentBridgeServer: @unchecked Sendable {
         body: AgentJSON? = nil,
         timeout: TimeInterval = 20
     ) async -> AgentCommandResult {
-        channelsLock.lock()
-        let conn = channels[instanceID]
-        channelsLock.unlock()
+        let conn = channelsLock.withLock { channels[instanceID] }
         guard let conn else {
             return AgentCommandResult(ok: false, status: 0, body: nil, error: "OpenCode instance is not connected.")
         }
 
         return await withCheckedContinuation { (continuation: CheckedContinuation<AgentCommandResult, Never>) in
             let ticket = AgentCommandTicket(continuation: continuation)
-            ticketsLock.lock()
-            tickets[ticket.id] = ticket
-            ticketsLock.unlock()
+            ticketsLock.withLock { tickets[ticket.id] = ticket }
 
             var payload: [String: AgentJSON] = [
                 "id": .string(ticket.id),
@@ -406,9 +402,7 @@ final class AgentBridgeServer: @unchecked Sendable {
 
             let sent = conn.send(AgentWireOutgoing(v: 1, kind: "command", data: .object(payload)))
             if !sent {
-                ticketsLock.lock()
-                tickets.removeValue(forKey: ticket.id)
-                ticketsLock.unlock()
+                ticketsLock.withLock { tickets.removeValue(forKey: ticket.id) }
                 continuation.resume(returning: AgentCommandResult(ok: false, status: 0, body: nil, error: "OpenCode connection lost."))
                 return
             }
@@ -416,9 +410,7 @@ final class AgentBridgeServer: @unchecked Sendable {
             // Timeout guard
             queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
                 guard let self else { return }
-                self.ticketsLock.lock()
-                let expired = self.tickets.removeValue(forKey: ticket.id)
-                self.ticketsLock.unlock()
+                let expired = self.ticketsLock.withLock { self.tickets.removeValue(forKey: ticket.id) }
                 if let expired {
                     expired.continuation.resume(returning: AgentCommandResult(ok: false, status: 0, body: nil, error: "OpenCode did not respond in time."))
                 }
@@ -442,22 +434,17 @@ final class AgentBridgeServer: @unchecked Sendable {
     }
 
     var connectedInstanceIDs: [String] {
-        channelsLock.lock()
-        defer { channelsLock.unlock() }
-        return Array(channels.keys)
+        channelsLock.withLock { Array(channels.keys) }
     }
 
     var instanceInfos: [AgentInstanceInfo] {
-        channelsLock.lock()
-        defer { channelsLock.unlock() }
-        return Array(instances.values)
+        channelsLock.withLock { Array(instances.values) }
     }
 
     var primaryInstanceID: String? {
-        channelsLock.lock()
-        defer { channelsLock.unlock() }
-        // Prefer the most recently seen instance
-        return instances.values.max(by: { $0.lastSeen < $1.lastSeen })?.id
+        channelsLock.withLock {
+            instances.values.max(by: { $0.lastSeen < $1.lastSeen })?.id
+        }
     }
 
     // MARK: Stale connections
@@ -467,9 +454,9 @@ final class AgentBridgeServer: @unchecked Sendable {
         timer.schedule(deadline: .now() + 60, repeating: 60)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.channelsLock.lock()
-            let stale = self.channels.filter { Date().timeIntervalSince($0.value.lastSeen) > 120 }
-            self.channelsLock.unlock()
+            let stale = channelsLock.withLock {
+                channels.filter { Date().timeIntervalSince($0.value.lastSeen) > 120 }
+            }
             for (id, conn) in stale {
                 NSLog("[AgentBridge] dropping stale instance \(id.prefix(8))")
                 shutdown(conn.fd, Int32(SHUT_RDWR))

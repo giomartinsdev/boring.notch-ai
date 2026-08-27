@@ -54,6 +54,7 @@ indirect enum AgentJSON: Codable, Equatable {
     }
 
     var string: String? { if case .string(let v) = self { v } else { nil } }
+    var number: Double? { if case .number(let v) = self { v } else { nil } }
     var bool: Bool? { if case .bool(let v) = self { v } else { nil } }
     var object: [String: AgentJSON]? { if case .object(let v) = self { v } else { nil } }
     var array: [AgentJSON]? { if case .array(let v) = self { v } else { nil } }
@@ -322,6 +323,8 @@ struct OCModelList: Decodable {
         let providerID: String
         var name: String?
         var status: String?
+        
+        var ref: String { "\(providerID)/\(id)" }
     }
     let data: [Item]
 }

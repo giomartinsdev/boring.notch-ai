@@ -10,12 +10,13 @@
 import AppKit
 import SwiftUI
 import Defaults
+import Combine
 
 final class AgentNotificationWindowController: NSWindowController {
     static let shared = AgentNotificationWindowController()
 
     private var hostingController: NSHostingController<AgentNotificationSurface>?
-    private var statusObserver: NSKeyValueObservation?
+    private var statusObserver: AnyCancellable?
 
     private init() {
         let window = NSWindow(

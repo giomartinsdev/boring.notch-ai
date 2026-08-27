@@ -33,7 +33,7 @@ struct AIAgentPanel: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(AgentPalette.ink)
-        .onAppear { vm.ensureConnected() }
+        .onAppear { vm.activate() }
     }
 
     // MARK: Header
@@ -113,7 +113,7 @@ struct AIAgentPanel: View {
                         Button { Task { await vm.switchModel(m) } } label: {
                             HStack {
                                 Text(m.name ?? m.id).font(.system(size: 11))
-                                if m.providerID + "/" + m.id == vm.selectedModel?.providerID + "/" + vm.selectedModel?.id {
+                                if m.ref == model.ref {
                                     Image(systemName: "checkmark")
                                 }
                             }
