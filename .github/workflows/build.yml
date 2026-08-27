@@ -30,12 +30,14 @@ jobs:
       - name: Debug build output
         if: success()
         run: |
-          echo "== find boringNotch executables =="
-          find build -type f -name "boringNotch" 2>/dev/null
-          echo "== MacOS dir =="
-          ls -la "build/Release/boringNotch.app/Contents/MacOS/" 2>/dev/null
-          echo "== app Contents =="
-          ls -la "build/Release/boringNotch.app/Contents/" 2>/dev/null
+          echo "== any .app under build =="
+          find build -maxdepth 4 -type d -name "*.app" 2>/dev/null
+          echo "== build/Release listing =="
+          ls -la "build/Release/" 2>/dev/null
+          echo "== executable anywhere =="
+          find . -type f -name "boringNotch" 2>/dev/null | head
+          echo "== BUILT_PRODUCTS_DIR =="
+          xcodebuild -target boringNotch -configuration Release -showBuildSettings 2>/dev/null | grep -E "BUILT_PRODUCTS_DIR|TARGET_BUILD_DIR|EXECUTABLE_PATH" | head
 
       - name: Package app as zip (preserves bundle)
         if: success()
