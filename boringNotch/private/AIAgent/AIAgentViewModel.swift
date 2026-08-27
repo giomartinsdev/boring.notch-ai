@@ -88,7 +88,7 @@ final class AIAgentViewModel: ObservableObject {
             struct ListResponse: Decodable { let data: [OpenCodeSession] }
             let response = try await client.decode(
                 "api/session",
-                query: [URLQueryItem(name: "location", value: "{\"workspace\":\"\(server.workspace)\"}")],
+                query: [URLQueryItem(name: "location", value: "{\"workspace\":\"\(server.workspace)\",\"directory\":\"\(server.workspace)\"}")],
                 as: ListResponse.self
             )
             sessions = response.data
@@ -98,10 +98,10 @@ final class AIAgentViewModel: ObservableObject {
     }
 
     func createSession() async {
-        struct CreateResponse: Decodable { let data: OpenCodeSession }
+            struct CreateResponse: Decodable { let data: OpenCodeSession }
         let payload: [String: Any] = [
             "agent": "build",
-            "location": ["workspace": server.workspace]
+            "location": ["workspace": server.workspace, "directory": server.workspace]
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
         do {
@@ -267,30 +267,46 @@ final class AIAgentViewModel: ObservableObject {
 
     var displayMessages: [DisplayMessage] {
         var messages: [DisplayMessage] = []
-        for event in events where event.type.contains("prompt") || event.type == "session.next.message" {
+        var seenMessageIDs = Set<String>()
+        for event in events {
             if event.type.contains("prompt") {
-                let text = event.data?["prompt"]?["text"]?.string ?? ""
-                guard !text.isEmpty else { continue }
-                messages.append(DisplayMessage(id: event.id, role: .user, text: text))
-            } else if event.type == "session.next.message" {
-                let text = Self.extractText(from: event.data?["message"])
-                guard !text.isEmpty else { continue }
+                guard let data = event.data,
+                      let text = data["prompt"]?["text"]?.string, !text.isEmpty else { continue }
+                let mid = data["messageID"]?.string ?? event.id
+                if seenMessageIDs.contains(mid) { continue }
+                seenMessageIDs.insert(mid)
+                messages.append(DisplayMessage(id: mid, role: .user, text: text))
+            } else if event.type.contains("message") {
+                guard let text = Self.extractText(from: event.data?["message"]), !text.isEmpty else { continue }
                 messages.append(DisplayMessage(id: event.id, role: .assistant, text: text))
+            } else if event.type == "session.next.step.failed" {
+                if let error = event.data?["error"]?["message"]?.string, !error.isEmpty {
+                    let mid = "err-\(event.id)"
+                    if !seenMessageIDs.contains(mid) {
+                        seenMessageIDs.insert(mid)
+                        messages.append(DisplayMessage(id: mid, role: .system, text: "⚠️ \(error)"))
+                    }
+                }
             }
         }
         return messages
     }
 
     static func extractText(from message: JSONValue?) -> String {
-        guard let message, let parts = message["parts"]?.array else { return "" }
-        var result = ""
-        for part in parts {
-            if part["type"]?.string == "text", let text = part["text"]?.string {
-                if !result.isEmpty { result += "\n" }
-                result += text
+        guard let message else { return "" }
+        if let parts = message["parts"]?.array {
+            var result = ""
+            for part in parts {
+                if part["type"]?.string == "text", let text = part["text"]?.string {
+                    if !result.isEmpty { result += "\n" }
+                    result += text
+                }
             }
+            if !result.isEmpty { return result }
         }
-        return result
+        if let content = message["content"]?.string, !content.isEmpty { return content }
+        if let text = message["text"]?.string, !text.isEmpty { return text }
+        return ""
     }
 
     var connectionLabel: String {
