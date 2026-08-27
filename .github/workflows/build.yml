@@ -1,0 +1,43 @@
+name: Build boring.notch (AI Agent)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ai-agent-control
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Build boringNotch (unsigned)
+        run: |
+          xcodebuild -target boringNotch -configuration Release \
+            -destination 'generic/platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="-" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            BUILD_DIR="$PWD/build" \
+            clean build 2>&1 | tee build.log
+
+      - name: Upload app artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: boringNotch-ai
+          path: build/Release/boringNotch.app
+          retention-days: 30
+
+      - name: Summarize build errors
+        if: failure()
+        run: |
+          echo "::group::Build errors"
+          grep -E "error:" build.log | head -50 || true
+          echo "::endgroup::"
