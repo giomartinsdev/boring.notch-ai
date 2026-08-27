@@ -27,12 +27,22 @@ jobs:
             BUILD_DIR="$PWD/build" \
             clean build 2>&1 | tee build.log
 
+      - name: Debug build output
+        if: success()
+        run: |
+          echo "== find boringNotch executables =="
+          find build -type f -name "boringNotch" 2>/dev/null
+          echo "== MacOS dir =="
+          ls -la "build/Release/boringNotch.app/Contents/MacOS/" 2>/dev/null
+          echo "== app Contents =="
+          ls -la "build/Release/boringNotch.app/Contents/" 2>/dev/null
+
       - name: Package app as zip (preserves bundle)
         if: success()
         run: |
           ditto -c -k --keepParent "build/Release/boringNotch.app" "boringNotch-ai.zip"
           echo "::group::zip contents (key files)"
-          unzip -l boringNotch-ai.zip | grep -E "MacOS/boringNotch|Contents/Info.plist" || true
+          unzip -l boringNotch-ai.zip | grep -E "MacOS/|Contents/Info.plist" | head
           echo "::endgroup::"
 
       - name: Upload app artifact
