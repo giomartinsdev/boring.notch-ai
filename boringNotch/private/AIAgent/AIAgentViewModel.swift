@@ -295,7 +295,7 @@ final class AIAgentViewModel: ObservableObject {
                     as: ModelsResp.self
                 ).data else { continue }
                 for m in models {
-                    options.append(ModelOption(providerID: m.providerID ?? p.id, id: m.id, name: m.name ?? m.id))
+                    options.append(ModelOption(providerID: m.providerID ?? p.id, modelID: m.id, name: m.name ?? m.id))
                 }
             }
             await MainActor.run { self.availableModels = options.sorted { $0.ref < $1.ref } }

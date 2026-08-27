@@ -175,9 +175,9 @@ struct DisplayMessage: Identifiable, Equatable {
 
 struct ModelOption: Identifiable, Hashable {
     let providerID: String
-    let id: String
+    let modelID: String
     let name: String
-    var ref: String { "\(providerID)/\(id)" }
+    var ref: String { "\(providerID)/\(modelID)" }
     var display: String { name.isEmpty ? ref : "\(name) (\(ref))" }
     var id: String { ref }
 }
