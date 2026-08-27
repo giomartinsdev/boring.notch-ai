@@ -360,18 +360,12 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     // MARK: Cards
 
     private func presentApprovalCard() {
-        guard Defaults[.aiAgentEnabled], Defaults[.aiAgentAutoOpen] else { return }
-        NotchOpener.open(duration: 0)
+        // Notification window observes view model directly
     }
 
     private func presentDoneCard(_ card: AgentDoneCard) {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             doneCards.append(card)
-        }
-        if Defaults[.aiAgentAutoOpen] {
-            NotchOpener.open(duration: 0)
-        } else {
-            NotchOpener.open(duration: 10)
         }
         scheduleDoneCardCleanup()
     }
@@ -582,18 +576,4 @@ private func stripWrappingQuotes(_ s: String) -> String {
         t = String(t.dropFirst().dropLast())
     }
     return t
-}
-
-// MARK: - Notch opening
-
-enum NotchOpener {
-    static let openNotification = Notification.Name("boringNotchOpenForAgent")
-
-    /// Opens the notch. `duration == 0` keeps it open until closed naturally.
-    static func open(duration: TimeInterval) {
-        NotificationCenter.default.post(
-            name: openNotification,
-            object: nil,
-            userInfo: ["duration": duration])
-    }
 }
