@@ -517,6 +517,12 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     func openChat(sessionID: String) {
         selectedSessionID = sessionID
+        // Clear any stale busy phase so we don't show "thinking" for a session
+        // that was left mid-generation (e.g. OpenCode closed without idle).
+        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[i].phase = .idle
+            sessions[i].wasBusy = false
+        }
         messages = []
         Task {
             await loadMessages()
@@ -683,7 +689,11 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
                 }
             }
         }
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty else {
+            NSLog("[Agent] no models found in OpenCode config")
+            return
+        }
+        NSLog("[Agent] loaded \(items.count) models from OpenCode config")
         let existing = Dictionary(uniqueKeysWithValues: availableModels.map { ($0.ref, $0) })
         var merged = existing
         for m in items { merged[m.ref] = m }

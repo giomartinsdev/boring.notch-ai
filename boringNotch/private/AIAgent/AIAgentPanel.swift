@@ -106,9 +106,9 @@ struct AIAgentPanel: View {
                 .help("New session")
             }
 
-            // Model picker (shows the active model even if the model list
-            // hasn't loaded yet, falling back to the raw ref string)
-            if vm.selectedSessionID != nil, let modelRef = vm.selectedSession?.modelRef {
+            // Model picker — always visible while a session is open so the
+            // user can change the model; label falls back to "Select model".
+            if vm.selectedSessionID != nil {
                 Menu {
                     if vm.availableModels.isEmpty {
                         Text("Loading models…")
@@ -119,14 +119,14 @@ struct AIAgentPanel: View {
                         Button { Task { await vm.switchModel(m) } } label: {
                             HStack {
                                 Text(m.name ?? m.id).font(.system(size: 11))
-                                if m.ref == modelRef {
+                                if let ref = vm.selectedSession?.modelRef, m.ref == ref {
                                     Image(systemName: "checkmark")
                                 }
                             }
                         }
                     }
                 } label: {
-                    Text(modelRef)
+                    Text(vm.selectedSession?.modelRef ?? "Select model")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(AgentPalette.paper)
                         .padding(.horizontal, 8)
