@@ -257,7 +257,7 @@ final class AIAgentViewModel: ObservableObject {
             return
         }
         let type = last.type
-        if type.contains("step.started") || type.contains("prompted") || type.contains("prompt.admitted") {
+        if type.contains("step.started") || type.contains("prompted") || type.contains("prompt.admitted") || type.contains("text.started") || type.contains("text.delta") {
             agentStatus = "Working…"
             isWorking = true
         } else if type.contains("step.failed") {
@@ -283,6 +283,12 @@ final class AIAgentViewModel: ObservableObject {
                 if seenMessageIDs.contains(mid) { continue }
                 seenMessageIDs.insert(mid)
                 messages.append(DisplayMessage(id: mid, role: .user, text: text))
+            } else if event.type == "session.next.text.ended" {
+                guard let text = event.data?["text"]?.string, !text.isEmpty else { continue }
+                let mid = event.data?["textID"]?.string ?? event.id
+                if seenMessageIDs.contains(mid) { continue }
+                seenMessageIDs.insert(mid)
+                messages.append(DisplayMessage(id: mid, role: .assistant, text: text))
             } else if event.type.contains("message") {
                 let text = Self.extractText(from: event.data?["message"])
                 guard !text.isEmpty else { continue }
