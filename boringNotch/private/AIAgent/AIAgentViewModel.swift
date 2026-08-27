@@ -216,8 +216,8 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         p.standardError = Pipe()
         try? p.run()
         p.waitUntilExit()
-        guard let data = out.fileHandleForReading.readDataToEndOfFile(),
-              let s = String(data: data, encoding: .utf8) else { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        guard let s = String(data: data, encoding: .utf8) else { return nil }
         let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
     }
