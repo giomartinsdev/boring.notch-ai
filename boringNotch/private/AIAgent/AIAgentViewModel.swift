@@ -514,7 +514,10 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     func openChat(sessionID: String) {
         selectedSessionID = sessionID
         messages = []
-        Task { await loadMessages() }
+        Task {
+            await loadMessages()
+            await fetchSessionDetail(sessionID: sessionID)
+        }
     }
 
     func closeChat() {
@@ -526,7 +529,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         guard selectedSessionID != nil else { return }
         reloadDebounce?.cancel()
         reloadDebounce = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(600))
+            try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
             await self?.loadMessages()
         }
@@ -566,9 +569,31 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
                 }
             }
         }
-        // If we're showing a busy indicator keep the live lastReply as the
-        // final (still streaming) message when history hasn't caught up.
+        // De-dupe by id (defensive against API returning repeats).
+        var seen = Set<String>()
+        parsed = parsed.filter { seen.insert($0.id).inserted }
         messages = parsed
+    }
+
+    /// Fetches the selected session's detail (model + title) so the panel can
+    /// show which model OpenCode is using, even for freshly created sessions.
+    private func fetchSessionDetail(sessionID: String) async {
+        guard let instanceID = selectedInstanceID else { return }
+        let path = "/api/session/\(sessionID)"
+
+        func apply(_ item: OCSessionList.Item) {
+            guard let i = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
+            if let m = item.model { sessions[i].modelRef = "\(m.providerID)/\(m.id)" }
+            if let t = item.title, !t.isEmpty { sessions[i].title = t }
+        }
+
+        if let detail: OCSessionDetail = await bridge.command(
+            on: instanceID, method: "GET", path: path, as: OCSessionDetail.self) {
+            apply(detail.data)
+        } else if let item: OCSessionList.Item = await bridge.command(
+            on: instanceID, method: "GET", path: path, as: OCSessionList.Item.self) {
+            apply(item)
+        }
     }
 
     func sendPrompt(_ raw: String) async {
@@ -576,8 +601,8 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         guard !text.isEmpty,
               let sessionID = selectedSessionID,
               let instanceID = selectedInstanceID else { return }
+        guard !sending else { return }
 
-        messages.append(AgentChatMessage(id: "local-\(UUID().uuidString)", role: .user, text: text))
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
             sessions[i].lastPrompt = text
         }
@@ -593,7 +618,11 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
             messages.append(AgentChatMessage(
                 id: "err-\(UUID().uuidString)", role: .error,
                 text: "Failed to send: \(result.error ?? "status \(result.status)")"))
+            return
         }
+        // Refresh immediately so the user's message appears from the source of
+        // truth (avoids an optimistic duplicate); streaming is handled by events.
+        await loadMessages()
     }
 
     func interrupt() {

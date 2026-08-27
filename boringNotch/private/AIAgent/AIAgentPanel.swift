@@ -106,21 +106,27 @@ struct AIAgentPanel: View {
                 .help("New session")
             }
 
-            // Model picker
-            if vm.selectedSessionID != nil, let model = vm.selectedModel {
+            // Model picker (shows the active model even if the model list
+            // hasn't loaded yet, falling back to the raw ref string)
+            if vm.selectedSessionID != nil, let modelRef = vm.selectedSession?.modelRef {
                 Menu {
+                    if vm.availableModels.isEmpty {
+                        Text("Loading models…")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AgentPalette.paperFaint)
+                    }
                     ForEach(vm.availableModels) { m in
                         Button { Task { await vm.switchModel(m) } } label: {
                             HStack {
                                 Text(m.name ?? m.id).font(.system(size: 11))
-                                if m.ref == model.ref {
+                                if m.ref == modelRef {
                                     Image(systemName: "checkmark")
                                 }
                             }
                         }
                     }
                 } label: {
-                    Text(model.name ?? model.id)
+                    Text(modelRef)
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(AgentPalette.paper)
                         .padding(.horizontal, 8)
@@ -223,22 +229,22 @@ struct AIAgentPanel: View {
                             ChatBubble(message: message)
                                 .id(message.id)
                         }
-                        if vm.chatLoading {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.vertical, 8)
-                        }
-                        if vm.sending {
-                            HStack {
+                        if vm.chatLoading || vm.sending || vm.selectedSession?.phase == .busy {
+                            HStack(spacing: 6) {
                                 Spacer()
-                                AgentStateDot(color: AgentPalette.running, pulsing: true, size: 7)
-                                Text("Sending…")
+                                AgentStateDot(
+                                    color: vm.selectedSession?.phase == .busy
+                                        ? AgentPalette.running : AgentPalette.waiting,
+                                    pulsing: true, size: 7)
+                                Text(vm.selectedSession?.phase == .busy
+                                     ? "OpenCode is thinking…"
+                                     : (vm.sending ? "Sending…" : "Loading…"))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(AgentPalette.paperFaint)
                                 Spacer()
                             }
                             .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
                             .transition(.opacity)
                         }
                     }
@@ -307,6 +313,7 @@ struct AIAgentPanel: View {
     }
 
     private func send() {
+        guard !vm.sending else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""

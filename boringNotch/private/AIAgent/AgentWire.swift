@@ -334,6 +334,12 @@ struct OCSessionCreated: Decodable {
     let data: Item
 }
 
+/// Single-session detail. OpenCode returns the session object directly for
+/// `GET /api/session/:id`; some builds wrap it in `{ data: ... }`.
+struct OCSessionDetail: Decodable {
+    let data: OCSessionList.Item
+}
+
 /// A parsed chat message ready for display.
 struct AgentChatMessage: Identifiable, Equatable {
     enum Role { case user, assistant, error }
