@@ -28,9 +28,15 @@ import { connect } from "net";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
 
-const SOCKET_PATH =
-  process.env.BORING_NOTCH_SOCKET_PATH ||
-  `${homedir()}/Library/Application Support/boringNotch/agent-bridge.sock`;
+// Bridge rendezvous: the Boring Notch app (App-Sandboxed) listens on a
+// localhost TCP port and scans this small range for a free one; the plugin
+// scans the same range to discover it. A Unix socket cannot be shared across
+// the sandbox boundary between the sandboxed app and the external opencode CLI.
+const BRIDGE_PORT_ENV = parseInt(process.env.BORING_NOTCH_BRIDGE_PORT || "", 10);
+const PORT_RANGE = Number.isFinite(BRIDGE_PORT_ENV) && BRIDGE_PORT_ENV > 0
+  ? [BRIDGE_PORT_ENV]
+  : [8742, 8743, 8744, 8745, 8746, 8747, 8748, 8749, 8750, 8751, 8752];
+const BRIDGE_HOST = process.env.BORING_NOTCH_BRIDGE_HOST || "127.0.0.1";
 
 const INSTANCE_ID = randomUUID();
 const MANAGED = process.env.BORING_NOTCH_MANAGED === "1";
@@ -61,7 +67,7 @@ function send(obj) {
 }
 
 // One-shot connection used before the persistent channel is established
-// (or as a fallback when it is down).
+// (or as a fallback when it is down). Scans the bridge port range.
 function sendOnce(obj, timeoutMs = 4_000) {
   return new Promise((resolve) => {
     let settled = false;
@@ -70,48 +76,54 @@ function sendOnce(obj, timeoutMs = 4_000) {
       settled = true;
       resolve(v);
     };
-    let sock;
-    try {
-      sock = connect({ path: SOCKET_PATH }, () => {
+    let idx = 0;
+    function tryNext() {
+      if (settled) return;
+      if (idx >= PORT_RANGE.length) { done(null); return; }
+      const port = PORT_RANGE[idx++];
+      let sock;
+      try {
+        sock = connect(port, BRIDGE_HOST);
+      } catch {
+        tryNext();
+        return;
+      }
+      let buf = "";
+      let connected = false;
+      sock.on("connect", () => {
+        connected = true;
         try {
           sock.write(JSON.stringify(obj) + "\n");
         } catch {
           done(null);
         }
       });
-    } catch {
-      done(null);
-      return;
-    }
-    let buf = "";
-    sock.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      const i = buf.indexOf("\n");
-      if (i >= 0) {
-        const line = buf.slice(0, i).trim();
-        let parsed = null;
-        try {
-          parsed = JSON.parse(line);
-        } catch {}
-        done(parsed);
+      sock.on("data", (chunk) => {
+        if (!connected) return;
+        buf += chunk.toString("utf8");
+        const i = buf.indexOf("\n");
+        if (i >= 0) {
+          const line = buf.slice(0, i).trim();
+          let parsed = null;
+          try {
+            parsed = JSON.parse(line);
+          } catch {}
+          done(parsed);
+          try {
+            sock.destroy();
+          } catch {}
+        }
+      });
+      sock.on("error", () => { if (!connected) tryNext(); else done(null); });
+      sock.on("close", () => done(null));
+      sock.setTimeout(timeoutMs, () => {
         try {
           sock.destroy();
         } catch {}
-      }
-    });
-    sock.on("error", () => {
-      try {
-        sock.destroy();
-      } catch {}
-      done(null);
-    });
-    sock.on("close", () => done(null));
-    sock.setTimeout(timeoutMs, () => {
-      try {
-        sock.destroy();
-      } catch {}
-      done(null);
-    });
+        done(null);
+      });
+    }
+    tryNext();
   });
 }
 
@@ -422,65 +434,79 @@ export default async ({ client, serverUrl }) => {
   }
 
   function connectChannel() {
-    let sock;
-    try {
-      sock = connect({ path: SOCKET_PATH });
-    } catch {
-      scheduleReconnect();
-      return;
+    let idx = 0;
+    let done = false;
+
+    function tryNext() {
+      if (stopped || done) return;
+      if (idx >= PORT_RANGE.length) { scheduleReconnect(); return; }
+      const port = PORT_RANGE[idx++];
+      let sock;
+      try {
+        sock = connect(port, BRIDGE_HOST);
+      } catch {
+        tryNext();
+        return;
+      }
+
+      let buf = "";
+      let connected = false;
+
+      sock.on("connect", () => {
+        connected = true;
+        done = true;
+        wire = sock;
+        writeLine(sock, {
+          v: 1,
+          kind: "hello",
+          data: {
+            instanceID: INSTANCE_ID,
+            serverUrl: origin,
+            authHeader,
+            managed: MANAGED,
+            directory: process.cwd(),
+            pid: process.pid,
+            agent: "opencode",
+          },
+        });
+        startPing();
+      });
+
+      sock.on("data", (chunk) => {
+        if (!connected) return;
+        buf += chunk.toString("utf8");
+        let i;
+        while ((i = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, i).trim();
+          buf = buf.slice(i + 1);
+          if (!line) continue;
+          let msg = null;
+          try {
+            msg = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (msg?.kind === "hello") {
+            continue;
+          }
+          try {
+            handleAppMessage(msg);
+          } catch {}
+        }
+      });
+
+      const onDown = () => {
+        if (connected) {
+          if (wire === sock) wire = null;
+          stopPing();
+          scheduleReconnect();
+        }
+      };
+      sock.on("error", () => { if (!connected) tryNext(); else onDown(); });
+      sock.on("close", () => { if (connected) onDown(); });
     }
 
-    let buf = "";
-    let gotHello = false;
-
-    sock.on("connect", () => {
-      wire = sock;
-      writeLine(sock, {
-        v: 1,
-        kind: "hello",
-        data: {
-          instanceID: INSTANCE_ID,
-          serverUrl: origin,
-          authHeader,
-          managed: MANAGED,
-          directory: process.cwd(),
-          pid: process.pid,
-          agent: "opencode",
-        },
-      });
-      startPing();
-    });
-
-    sock.on("data", (chunk) => {
-      buf += chunk.toString("utf8");
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, i).trim();
-        buf = buf.slice(i + 1);
-        if (!line) continue;
-        let msg = null;
-        try {
-          msg = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (msg?.kind === "hello") {
-          gotHello = true;
-          continue;
-        }
-        try {
-          handleAppMessage(msg);
-        } catch {}
-      }
-    });
-
-    const onDown = () => {
-      if (wire === sock) wire = null;
-      stopPing();
-      scheduleReconnect();
-    };
-    sock.on("error", onDown);
-    sock.on("close", onDown);
+    tryNext();
   }
 
   let reconnectDelay = RECONNECT_MIN_MS;

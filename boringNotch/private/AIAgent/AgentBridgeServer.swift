@@ -2,17 +2,27 @@
 //  AgentBridgeServer.swift
 //  boringNotch
 //
-//  Unix domain socket server the OpenCode bridge plugin connects to.
+//  TCP localhost bridge server the OpenCode bridge plugin connects to.
 //  Handles the persistent channel protocol: hello registration, live events,
 //  held permission/question requests, and REST command passthrough.
 //
-//  Based on the architecture popularized by open-vibe-island, adapted to
-//  boring.notch with a persistent bidirectional channel so the app can drive
-//  any OpenCode instance (TUI included) through the plugin's in-process fetch.
-//
+//  Why TCP and not a Unix domain socket: Boring Notch is an App-Sandboxed
+//  macOS app. A sandboxed app cannot share a filesystem path (such as a
+//  Unix socket in /tmp or ~/Library/Application Support) with the external
+//  opencode process that loads the plugin. localhost TCP works across that
+//  boundary and is already covered by the network.server / network.client
+//  entitlements. The app scans a small fixed port range for a free port;
+//  the plugin scans the same range to discover it.
 
 import Foundation
 import AppKit
+import os.log
+
+private let agentBridgeLog = OSLog(subsystem: "com.boringnotch.agent", category: "bridge")
+
+private func blog(_ msg: String) {
+    os_log("%{public}@", log: agentBridgeLog, type: .info, msg)
+}
 
 // MARK: - Connection wrapper
 
@@ -80,13 +90,15 @@ protocol AgentBridgeDelegate: AnyObject {
 // MARK: - Server
 
 final class AgentBridgeServer: @unchecked Sendable {
-    static let socketDirectory = FileManager.default
-        .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("boringNotch", isDirectory: true)
-    static var socketPath: URL { socketDirectory.appendingPathComponent("agent-bridge.sock") }
+    /// Scan this small range for a free localhost port. Keep in sync with the
+    /// PORT_RANGE in boring-notch-opencode.js.
+    static let portBase = 8742
+    static let portRange: [Int] = Array(portBase..<(portBase + 11))
+    static let bridgeHost = "127.0.0.1"
 
     private weak var delegate: (any AgentBridgeDelegate)?
     private var listenFD: Int32 = -1
+    private var boundPort: Int = 0
     private var running = false
     private let queue = DispatchQueue(label: "boringnotch.agent-bridge", attributes: .concurrent)
 
@@ -109,54 +121,54 @@ final class AgentBridgeServer: @unchecked Sendable {
         self.delegate = delegate
         stop()
 
-        do {
-            try FileManager.default.createDirectory(at: Self.socketDirectory, withIntermediateDirectories: true)
-        } catch {
-            NSLog("[AgentBridge] cannot create socket directory: \(error)")
-            return false
-        }
-
-        let path = Self.socketPath.path
-        unlink(path)
-
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else {
-            NSLog("[AgentBridge] socket() failed: errno \(errno)")
-            return false
-        }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let ok = path.withCString { cstr -> Bool in
-            withUnsafeMutableBytes(of: &addr) { raw in
-                let maxLen = MemoryLayout<sockaddr_un>.size - MemoryLayout<sa_family_t>.size
-                let len = min(raw.count, maxLen, Int(strlen(cstr)) + 1)
-                raw.baseAddress?.copyMemory(from: cstr, byteCount: len)
-                return true
+        var boundFD: Int32 = -1
+        var chosenPort: Int = 0
+        for port in Self.portRange {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else {
+                blog("socket() failed: errno \(errno)")
+                return false
             }
-        }
-        guard ok else { return false }
 
-        // Make the address structure the right length before bind
-        withUnsafePointer(to: &addr) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                _ = bind(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+            var yes: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+            var addr = sockaddr_in()
+            addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            addr.sin_family = sa_family_t(AF_INET)
+            addr.sin_port = in_port_t(port).bigEndian
+            addr.sin_addr.s_addr = inet_addr(Self.bridgeHost)
+
+            let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                    bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                }
             }
-        }
-        // Restrict to current user
-        chmod(path, 0o600)
+            if bindResult != 0 {
+                close(fd)
+                continue
+            }
 
-        guard listen(fd, 16) == 0 else {
-            NSLog("[AgentBridge] listen() failed: errno \(errno)")
-            close(fd)
+            if listen(fd, 16) != 0 {
+                close(fd)
+                continue
+            }
+
+            boundFD = fd
+            chosenPort = port
+            break
+        }
+
+        guard boundFD >= 0 else {
+            blog("could not bind any bridge port in range \(Self.portBase)-\(Self.portBase + Self.portRange.count - 1); bridge unavailable")
             return false
         }
 
-        listenFD = fd
+        listenFD = boundFD
+        boundPort = chosenPort
         running = true
-        NSLog("[AgentBridge] listening at \(path)")
+        blog("listening on \(Self.bridgeHost):\(chosenPort)")
 
-        // Accept loop on a dedicated thread
         Thread.detachNewThread { [weak self] in
             self?.acceptLoop()
         }
@@ -174,12 +186,12 @@ final class AgentBridgeServer: @unchecked Sendable {
             listenFD = -1
         }
         channelsLock.lock()
-        let all = channels.values
+        let all = Array(channels.values)
         channels.removeAll()
         instances.removeAll()
         channelsLock.unlock()
-        all.forEach { $0.send(AgentWireOutgoing(v: 1, kind: "ack", data: nil)) }
-        unlink(Self.socketPath.path)
+        all.forEach { _ = $0.send(AgentWireOutgoing(v: 1, kind: "ack", data: nil)) }
+        blog("bridge stopped")
     }
 
     // MARK: Accept + read loop
@@ -251,7 +263,7 @@ final class AgentBridgeServer: @unchecked Sendable {
             handleQuestion(message.data, from: conn)
         case "command.result":
             handleCommandResult(message.data)
-        case "ping":
+        case "ping", "pong":
             break // lastSeen already updated
         default:
             break
@@ -282,7 +294,7 @@ final class AgentBridgeServer: @unchecked Sendable {
             delegate?.bridge(didRegisterInstance: info)
             delegate?.bridgeDidUpdateInstances(count: count)
         }
-        NSLog("[AgentBridge] instance \(instanceID.prefix(8)) connected (dir: \(info.shortDirectory), managed: \(info.managed))")
+        blog("instance \(instanceID.prefix(8)) connected (dir: \(info.shortDirectory), managed: \(info.managed))")
     }
 
     private func handleEvent(_ data: AgentJSON?, from conn: AgentBridgeConnection) {
@@ -351,7 +363,6 @@ final class AgentBridgeServer: @unchecked Sendable {
             return (wasCurrent, channels.count)
         }
 
-        // Any held requests from this connection can never be answered.
         heldLock.withLock {
             heldRepliers = heldRepliers.filter { _, _ in !wasCurrent || true }
         }
@@ -361,7 +372,7 @@ final class AgentBridgeServer: @unchecked Sendable {
                 delegate?.bridge(didLoseInstance: instanceID)
                 delegate?.bridgeDidUpdateInstances(count: count)
             }
-            NSLog("[AgentBridge] instance \(instanceID.prefix(8)) disconnected")
+            blog("instance \(instanceID.prefix(8)) disconnected")
         }
     }
 
@@ -376,7 +387,7 @@ final class AgentBridgeServer: @unchecked Sendable {
     }
 
     /// Runs a REST call on the given OpenCode instance through its plugin
-    /// channel. `path` is relative to the instance root (e.g. "/api/session").
+    /// channel. `path` is relative to the instance root (e.g. "/api/session".
     func command(
         on instanceID: String,
         method: String,
@@ -458,9 +469,8 @@ final class AgentBridgeServer: @unchecked Sendable {
                 self.channels.filter { Date().timeIntervalSince($0.value.lastSeen) > 120 }
             }
             for (id, conn) in stale {
-                NSLog("[AgentBridge] dropping stale instance \(id.prefix(8))")
+                blog("dropping stale instance \(id.prefix(8))")
                 shutdown(conn.fd, Int32(SHUT_RDWR))
-                _ = id
             }
         }
         timer.resume()
