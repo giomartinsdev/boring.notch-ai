@@ -277,7 +277,8 @@ final class AIAgentViewModel: ObservableObject {
                 seenMessageIDs.insert(mid)
                 messages.append(DisplayMessage(id: mid, role: .user, text: text))
             } else if event.type.contains("message") {
-                guard let text = Self.extractText(from: event.data?["message"]), !text.isEmpty else { continue }
+                let text = Self.extractText(from: event.data?["message"])
+                guard !text.isEmpty else { continue }
                 messages.append(DisplayMessage(id: event.id, role: .assistant, text: text))
             } else if event.type == "session.next.step.failed" {
                 if let error = event.data?["error"]?["message"]?.string, !error.isEmpty {
