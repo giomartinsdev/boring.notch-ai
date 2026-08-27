@@ -99,6 +99,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     private var reloadDebounce: Task<Void, Never>?
     private var doneCardCleanupTask: Task<Void, Never>?
     private var started = false
+    private var openCodeProcess: Process?
 
     var hasPendingApproval: Bool {
         !pendingPermissions.isEmpty || !pendingQuestions.isEmpty
@@ -138,12 +139,87 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
             NSLog("[Agent] failed to start bridge server")
         }
         AgentPluginInstaller.ensureInstalled()
+        launchOpenCodeIfNeeded(force: false)
     }
 
     func restart() {
         bridge.stop()
         started = false
         activate()
+    }
+
+    // MARK: Managed OpenCode launch
+
+    /// Launches OpenCode as a managed, persistent instance so the user can
+    /// chat directly from the panel without starting it themselves. OpenCode
+    /// needs a pseudo-terminal to run its TUI, so we wrap it in `script`.
+    /// `respectAutoLaunch` honours the `aiAgentAutoLaunch` setting; pass false
+    /// to always attempt (e.g. an explicit button tap).
+    func launchManagedOpenCode(respectAutoLaunch: Bool = true) {
+        launchOpenCodeIfNeeded(force: !respectAutoLaunch)
+    }
+
+    private func launchOpenCodeIfNeeded(force: Bool) {
+        guard force || Defaults[.aiAgentAutoLaunch] else { return }
+        guard bridge.primaryInstanceID == nil else { return }
+        guard openCodeProcess == nil || openCodeProcess?.isRunning != true else { return }
+
+        let binary = resolveOpenCodeBinary()
+        guard !binary.isEmpty else {
+            NSLog("[Agent] OpenCode binary not found; cannot launch managed instance")
+            return
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+        process.arguments = ["-q", "/dev/null", binary]
+        let ws = Defaults[.aiAgentWorkspace].isEmpty ? NSHomeDirectory() : Defaults[.aiAgentWorkspace]
+        process.currentDirectoryURL = URL(fileURLWithPath: ws)
+
+        var env = ProcessInfo.processInfo.environment
+        let extra = (NSHomeDirectory() as NSString).appendingPathComponent(".opencode/bin")
+        env["PATH"] = [extra, env["PATH"]].compactMap { $0 }.joined(separator: ":")
+        process.environment = env
+
+        process.standardInput = nil
+        process.standardOutput = nil
+        process.standardError = nil
+
+        do {
+            try process.run()
+            openCodeProcess = process
+            NSLog("[Agent] launched managed OpenCode: \(binary) (dir: \(ws))")
+        } catch {
+            NSLog("[Agent] failed to launch OpenCode: \(error)")
+        }
+    }
+
+    private func resolveOpenCodeBinary() -> String {
+        let configured = Defaults[.aiAgentServerBinary]
+        if !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
+            return configured
+        }
+        if let p = which("opencode"), !p.isEmpty, FileManager.default.isExecutableFile(atPath: p) {
+            return p
+        }
+        let common = (NSHomeDirectory() as NSString).appendingPathComponent(".opencode/bin/opencode")
+        if FileManager.default.isExecutableFile(atPath: common) { return common }
+        return ""
+    }
+
+    private func which(_ name: String) -> String? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        p.arguments = [name]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        try? p.run()
+        p.waitUntilExit()
+        guard let data = out.fileHandleForReading.readDataToEndOfFile(),
+              let s = String(data: data, encoding: .utf8) else { return nil }
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
     }
 
     // MARK: AgentBridgeDelegate

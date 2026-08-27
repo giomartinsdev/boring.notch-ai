@@ -160,6 +160,13 @@ struct AIAgentPanel: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
             if !vm.connected {
+                Button { vm.launchManagedOpenCode(respectAutoLaunch: false) } label: {
+                    Label("Launch OpenCode", systemImage: "play.fill")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(AgentPalette.paper)
                 Button { vm.restart() } label: {
                     Label("Restart Bridge", systemImage: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))

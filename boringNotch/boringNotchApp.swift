@@ -425,6 +425,9 @@ setupDragDetectors()
         // Start the OpenCode agent bridge and install the plugin
         AIAgentViewModel.shared.bridge.start(delegate: AIAgentViewModel.shared)
         AgentPluginInstaller.ensureInstalled()
+        if Defaults[.aiAgentEnabled] {
+            AIAgentViewModel.shared.launchManagedOpenCode(respectAutoLaunch: true)
+        }
 
         // The notification window observes the view model directly and shows/hides automatically
         _ = AgentNotificationWindowController.shared
