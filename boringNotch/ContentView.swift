@@ -13,9 +13,6 @@ import KeyboardShortcuts
 import SwiftUI
 import SwiftUIIntrospect
 
-// AIAgent imports (internal)
-import boringNotch
-
 @MainActor
 struct ContentView: View {
     @EnvironmentObject var vm: BoringViewModel
