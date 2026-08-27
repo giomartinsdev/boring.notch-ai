@@ -2,9 +2,9 @@
 //  AIAgentFullView.swift
 //  boringNotch
 //
-//  Full desktop window for driving the opencode agent: session switcher,
-//  live transcript, prompt input, and inline approve/deny of permission and
-//  question prompts — the VibeIsland-style cockpit.
+//  Full desktop window for driving opencode: session sidebar,
+//  transcript, prompt input, and inline approve/deny of permission
+//  and question prompts — the Vibe Island-style cockpit.
 //
 
 import SwiftUI
@@ -12,173 +12,267 @@ import Defaults
 
 struct AIAgentFullView: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
-    @State private var draft: String = ""
+    @State private var draft = ""
 
     var body: some View {
         HStack(spacing: 0) {
             sessionSidebar
-                .frame(width: 200)
-                .background(Color(nsColor: .windowBackgroundColor))
+                .frame(minWidth: 220, maxWidth: 260)
+                .background(AgentPalette.ink)
 
-            Divider()
+            Divider().overlay(Color.white.opacity(0.08))
 
             VStack(spacing: 0) {
                 transcript
-                Divider()
+                Divider().overlay(Color.white.opacity(0.08))
                 promptBar
             }
         }
         .frame(minWidth: 720, minHeight: 480)
     }
 
+    // MARK: Sidebar
+
     private var sessionSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Sessions")
                     .font(.headline)
+                    .foregroundStyle(AgentPalette.paper)
                 Spacer()
-                Button(action: { Task { await vm.createSession() } }) {
+                Button { Task { await vm.startNewSession() } } label: {
                     Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(.plain)
             }
-            .padding(12)
+            .padding(14)
 
-            Divider()
+            Divider().overlay(Color.white.opacity(0.08))
 
             List(vm.sessions, selection: Binding(
                 get: { vm.selectedSessionID },
-                set: { if let id = $0 { vm.selectSession(id) } }
+                set: { if let id = $0 { vm.openChat(sessionID: id) } }
             )) { session in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(session.displayName).font(.callout.weight(.medium))
-                    if let model = session.model {
-                        Text("\(model.id) · \(model.providerID)")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(.vertical, 2)
+                SessionFullRow(session: session)
+                    .padding(.vertical, 2)
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
         }
     }
 
+    // MARK: Transcript
+
     private var transcript: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(vm.displayMessages) { message in
-                        HStack {
-                            if message.role == .user { Spacer() }
-                            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 2) {
-                                Text(message.role == .user ? "You" : "Agent")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Text(message.text)
-                                    .textSelection(.enabled)
-                                    .padding(10)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .fill(message.role == .user ? Color.accentColor.opacity(0.22) : Color(nsColor: .secondarySystemFill))
-                                    )
-                            }
-                            if message.role == .assistant { Spacer() }
+                    ForEach(vm.messages) { message in
+                        ChatBubbleFull(message: message)
+                            .id(message.id)
+                    }
+
+                    if !vm.pendingPermissions.isEmpty {
+                        ForEach(vm.pendingPermissions) { request in
+                            PermissionCardFull(request: request)
                         }
-                        .id(message.id)
                     }
 
-                    ForEach(vm.pendingPermissions) { request in
-                        permissionCard(request)
-                    }
-
-                    ForEach(vm.pendingQuestions) { request in
-                        QuestionCard(request: request)
-                    }
-
-                    if vm.isWorking {
-                        HStack {
-                            ProgressView().scaleEffect(0.7)
-                            Text("Agent is working…").font(.caption).foregroundStyle(.secondary)
+                    if !vm.pendingQuestions.isEmpty {
+                        ForEach(vm.pendingQuestions) { request in
+                            QuestionCardFull(request: request)
                         }
+                    }
+
+                    if vm.sending {
+                        HStack {
+                            AgentStateDot(color: AgentPalette.running, pulsing: true, size: 7)
+                            Text("Agent is working…")
+                                .font(.caption)
+                                .foregroundStyle(AgentPalette.paperSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(12)
+                .padding(14)
             }
-            .onChange(of: vm.displayMessages.count + vm.pendingPermissions.count + vm.pendingQuestions.count) {
-                if let last = vm.displayMessages.last {
+            .onChange(of: vm.messages.count + vm.pendingPermissions.count + vm.pendingQuestions.count) {
+                if let last = vm.messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
             }
         }
     }
 
-    private func permissionCard(_ request: PermissionRequest) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(request.summary, systemImage: "hand.raised.fill")
-                .font(.callout.weight(.medium))
-            if let input = request.input?.string, !input.isEmpty {
-                Text(input)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    // MARK: Prompt bar
+
+    private var promptBar: some View {
+        HStack(spacing: 10) {
+            TextField("Send a prompt to your agent…", text: $draft, onCommit: send)
+                .textFieldStyle(.roundedBorder)
+                .disabled(vm.sending)
+            Button(action: send) {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 13, weight: .semibold))
             }
+            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || vm.sending)
+            Button(action: { vm.interrupt() }) {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .help("Interrupt")
+        }
+        .padding(12)
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        draft = ""
+        vm.sendPrompt(text)
+    }
+}
+
+// MARK: - Session full row
+
+private struct SessionFullRow: View {
+    let session: AgentSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Button("Approve") { vm.approve(request.id) }
+                AgentStateDot(color: AgentPalette.tint(for: session.phase), size: 8)
+                Text(session.displayTitle)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(AgentPalette.paper)
+                    .lineLimit(1)
+            }
+
+            if let model = session.modelRef {
+                Text(model)
+                    .font(.caption2)
+                    .foregroundStyle(AgentPalette.paperSecondary)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+// MARK: - Full transcript bubble
+
+private struct ChatBubbleFull: View {
+    let message: AgentChatMessage
+
+    var body: some View {
+        HStack {
+            if message.role == .user { Spacer() }
+            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 3) {
+                Text(message.role == .user ? "You" : "Agent")
+                    .font(.caption2)
+                    .foregroundStyle(AgentPalette.paperSecondary)
+                Text(message.text)
+                    .textSelection(.enabled)
+                    .padding(12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(message.role == .user
+                                ? Color.accentColor.opacity(0.22)
+                                : Color(nsColor: .secondarySystemFill))
+                    )
+            }
+            if message.role == .assistant { Spacer() }
+        }
+    }
+}
+
+// MARK: - Full permission card
+
+private struct PermissionCardFull: View {
+    @ObservedObject private var vm = AIAgentViewModel.shared
+    let request: AgentPendingPermission
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(request.label, systemImage: "hand.raised.fill")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.orange)
+            if !request.command.isEmpty {
+                Text(request.command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(AgentPalette.paperSecondary)
+            }
+            HStack(spacing: 10) {
+                Button("Approve") { vm.approve(request) }
                     .buttonStyle(.borderedProminent)
-                Button("Deny") { vm.deny(request.id) }
+                Button("Always") { vm.approve(request, always: true) }
+                    .buttonStyle(.bordered)
+                Button("Deny") { vm.deny(request) }
                     .buttonStyle(.bordered)
                     .tint(.red)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.orange.opacity(0.12)))
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.orange.opacity(0.12)))
     }
+}
 
-    private struct QuestionCard: View {
-        let request: QuestionRequest
-        @State private var answer: String = ""
-        @ObservedObject private var vm = AIAgentViewModel.shared
+// MARK: - Full question card
 
-        var body: some View {
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Question", systemImage: "questionmark.circle.fill")
-                    .font(.callout.weight(.medium))
-                if let question = request.question, !question.isEmpty {
-                    Text(question).font(.caption)
+private struct QuestionCardFull: View {
+    @ObservedObject private var vm = AIAgentViewModel.shared
+    let request: AgentPendingQuestion
+    @State private var customAnswer = ""
+    @State private var submitting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Question", systemImage: "questionmark.circle.fill")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.blue)
+
+            ForEach(request.questions) { q in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(q.question).font(.callout)
+                    if !q.options.isEmpty {
+                        HStack(spacing: 8) {
+                            ForEach(q.options) { opt in
+                                Button {
+                                    vm.answer(request, answers: [[opt.label]])
+                                } label: {
+                                    Text(opt.label)
+                                        .font(.callout.weight(.medium))
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(submitting)
+                            }
+                        }
+                    }
+                    if q.custom {
+                        HStack {
+                            TextField("Type your answer…", text: $customAnswer, onCommit: submitCustom)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Send") { submitCustom() }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(customAnswer.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
                 }
-                HStack(spacing: 6) {
-                    TextField("Type your answer…", text: $answer, onCommit: { vm.answerQuestion(request.id, text: answer) })
-                        .textFieldStyle(.roundedBorder)
-                    Button("Send") { vm.answerQuestion(request.id, text: answer) }
-                        .buttonStyle(.borderedProminent)
-                }
+                .padding(.horizontal, 12)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.12)))
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.blue.opacity(0.12)))
     }
 
-    private var promptBar: some View {
-        HStack(spacing: 8) {
-            TextField("Send a prompt to your agent…", text: $draft, onCommit: send)
-                .textFieldStyle(.roundedBorder)
-            Button(action: send) {
-                Image(systemName: "paperplane.fill")
-            }
-            Button(action: { vm.interrupt() }) {
-                Image(systemName: "stop.fill")
-            }
-            .help("Interrupt")
-        }
-        .padding(10)
-    }
-
-    private func send() {
-        let text = draft
-        draft = ""
-        vm.sendPrompt(text)
+    private func submitCustom() {
+        let text = customAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        customAnswer = ""
+        vm.answer(request, answers: [[text]])
     }
 }

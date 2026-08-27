@@ -2,66 +2,121 @@
 //  AIAgentSettingsView.swift
 //  boringNotch
 //
-//  Settings pane for the opencode agent integration.
+//  Settings pane for the OpenCode agent integration. Matches boring.notch's
+//  SettingsView style with grouped sections and clean visual hierarchy.
 //
 
 import SwiftUI
 import Defaults
+import LaunchAtLogin
 
 struct AIAgentSettingsView: View {
     @Default(.aiAgentEnabled) var enabled
-    @Default(.aiAgentAutoLaunch) var autoLaunch
+    @Default(.aiAgentAutoOpen) var autoOpen
+    @Default(.aiAgentNotifyOnDone) var notifyOnDone
     @Default(.aiAgentServerURL) var serverURL
     @Default(.aiAgentServerUsername) var username
     @Default(.aiAgentServerPassword) var password
-    @Default(.aiAgentServerBinary) var binary
-    @Default(.aiAgentWorkspace) var workspace
-    @Default(.aiAgentModel) var model
+    @Default(.aiAgentModel) var defaultModel
     @ObservedObject private var vm = AIAgentViewModel.shared
 
     var body: some View {
         Form {
+            // Enable section
             Section {
-                Toggle("Enable AI Agent panel", isOn: $enabled)
+                Toggle("Enable Agent tab", isOn: $enabled)
                     .tint(.effectiveAccent)
-                Text("Adds an “Agent” tab to the notch and a desktop control window for your opencode agent.")
+                Text("Adds an Agent tab to the notch and a desktop window for your opencode sessions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Server") {
-                Toggle("Auto-launch opencode when Boring Notch opens", isOn: $autoLaunch)
-                    .tint(.effectiveAccent)
-                TextField("Server URL", text: $serverURL)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Workspace path", text: $workspace)
-                    .textFieldStyle(.roundedBorder)
-                    .help("Project directory the agent operates on, e.g. /Users/you/projects/myapp")
-                Picker("Model", selection: $model) {
-                    Text("Default (opencode)").tag("")
-                    ForEach(vm.availableModels) { option in
-                        Text(option.display).tag(option.ref)
+            // Connection status
+            Section {
+                HStack {
+                    Circle()
+                        .fill(vm.connected ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(vm.connected ? "Connected to OpenCode" : "Waiting for OpenCode…")
+                        .font(.callout)
+                        .foregroundStyle(vm.connected ? .primary : .secondary)
+                    Spacer()
+                    if !vm.connected {
+                        Button("Restart Bridge") { AIAgentViewModel.shared.restart() }
+                            .controlSize(.small)
                     }
                 }
-                .onAppear { Task { await vm.fetchModels() } }
+                .padding(.vertical, 2)
+
+                if vm.connected, let info = vm.instances.first {
+                    Text("Bridge: \(info.shortDirectory) · \(info.managed ? "managed" : "discovered")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Auto-open notch for approvals & done", isOn: $autoOpen)
+                    .tint(.effectiveAccent)
+                Toggle("Notify when agent finishes a task", isOn: $notifyOnDone)
+                    .tint(.effectiveAccent)
+
+                Button("Install / Update OpenCode Plugin") {
+                    AgentPluginInstaller.install()
+                }
+                .controlSize(.small)
+
+                if AgentPluginInstaller.isInstalled() {
+                    Text("Plugin installed at ~/.config/opencode/plugins/boring-notch.js")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Plugin not installed — click above to install")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
 
-            Section("Authentication") {
+            // Default model
+            Section("Default Model") {
+                Picker("Model", selection: $defaultModel) {
+                    Text("Default (opencode)").tag("")
+                    ForEach(vm.availableModels) { m in
+                        Text("\(m.name ?? m.id) (\(m.providerID))").tag("\(m.providerID)/\(m.id)")
+                    }
+                }
+                .onAppear { Task { await AIAgentViewModel.shared.fetchModels(instanceID: AIAgentViewModel.shared.bridge.primaryInstanceID ?? "") } }
+
+                if !defaultModel.isEmpty {
+                    Text("Used when creating new sessions from the notch.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            // Advanced
+            Section("Advanced") {
+                TextField("Server URL (auto-discovered)", text: $serverURL)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(true)
+                    .help("Auto-discovered from the OpenCode plugin bridge")
+
                 TextField("Username", text: $username)
                     .textFieldStyle(.roundedBorder)
-                SecureField("Password", text: $password)
+
+                SecureField("Password (optional)", text: $password)
                     .textFieldStyle(.roundedBorder)
-                TextField("Custom opencode binary path (optional)", text: $binary)
-                    .textFieldStyle(.roundedBorder)
+
+                Text("Credentials are stored locally and sent only to your local OpenCode server.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
+            // Actions
             Section {
-                Button("Open control window") {
-                    AIAgentViewModel.shared.activate()
+                Button("Open Agent Window") {
                     AIAgentWindowController.shared.showWindow()
                 }
-                Button("Refresh models") {
-                    Task { await vm.fetchModels() }
+                Button("Refresh Models") {
+                    Task { await AIAgentViewModel.shared.fetchModels(instanceID: AIAgentViewModel.shared.bridge.primaryInstanceID ?? "") }
                 }
             }
         }

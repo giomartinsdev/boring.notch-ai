@@ -2,7 +2,8 @@
 //  AIAgentWindowController.swift
 //  boringNotch
 //
-//  Hosts the full agent control window (mirrors SettingsWindowController).
+//  Hosts the full agent desktop window. Mirrors SettingsWindowController
+//  but reuses the shared AIAgentViewModel for consistent state.
 //
 
 import AppKit
@@ -13,7 +14,7 @@ final class AIAgentWindowController: NSWindowController {
 
     private init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 580),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -28,15 +29,16 @@ final class AIAgentWindowController: NSWindowController {
 
     private func setupWindow() {
         guard let window else { return }
-        window.title = "Boring Notch · AI Agent"
-        window.titlebarAppearsTransparent = false
-        window.titleVisibility = .visible
+        window.title = "Boring Notch · OpenCode Agent"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         window.isMovableByWindowBackground = true
         window.collectionBehavior = [.managed, .participatesInCycle, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
         window.isRestorable = true
         window.identifier = NSUserInterfaceItemIdentifier("BoringNotchAIAgentWindow")
+        window.minSize = NSSize(width: 700, height: 460)
 
         let hostingView = NSHostingView(rootView: AIAgentFullView())
         window.contentView = hostingView

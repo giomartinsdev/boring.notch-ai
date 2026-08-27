@@ -421,10 +421,77 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             adjustWindowPosition(changeAlpha: true)
         }
 
-        setupDragDetectors()
+setupDragDetectors()
 
-        // Start (or connect to) the opencode agent server if the feature is enabled.
-        AIAgentViewModel.shared.activate()
+        // Start the OpenCode agent bridge (replaces old AIAgentViewModel.activate)
+        AIAgentViewModel.shared.bridge.start(delegate: AIAgentViewModel.shared)
+        AgentPluginInstaller.ensureInstalled()
+
+        // Observe notch open requests from the agent system (approval cards, done notifications)
+        let openNotchObserver = NotificationCenter.default.addObserver(
+            forName: NotchOpener.openNotification,
+            object: nil, queue: .main) { [weak self] notification in
+                guard let self else { return }
+                let duration = (notification.userInfo?["duration"] as? TimeInterval) ?? 0
+
+                Task { [weak self] in
+                    guard let self else { return }
+
+                    // Find the correct viewModel for the screen where the mouse is (or main)
+                    let mouseLocation = NSEvent.mouseLocation
+                    var viewModel = self.vm
+
+                    if Defaults[.showOnAllDisplays] {
+                        for screen in NSScreen.screens {
+                            if screen.frame.contains(mouseLocation),
+                               let uuid = screen.displayUUID,
+                               let screenVM = self.viewModels[uuid] {
+                                viewModel = screenVM
+                                break
+                            }
+                        }
+                    }
+
+                    self.closeNotchTask?.cancel()
+                    self.closeNotchTask = nil
+
+                    if viewModel.notchState == .closed {
+                        await MainActor.run {
+                            viewModel.open()
+                        }
+                        self.coordinator.currentView = .agent
+
+                        if duration > 0 {
+                            let task = Task { [weak viewModel, weak self] in
+                                do {
+                                    try await Task.sleep(for: .seconds(duration))
+                                    await MainActor.run {
+                                        viewModel?.close()
+                                    }
+                                } catch { }
+                            }
+                            self.closeNotchTask = task
+                        }
+                    } else if viewModel.notchState == .open {
+                        // Already open — just switch to agent tab and reset auto-close if needed
+                        self.coordinator.currentView = .agent
+                        if duration > 0 {
+                            let task = Task { [weak viewModel, weak self] in
+                                do {
+                                    try await Task.sleep(for: .seconds(duration))
+                                    await MainActor.run {
+                                        viewModel?.close()
+                                    }
+                                } catch { }
+                            }
+                            self.closeNotchTask = task
+                        }
+                    }
+                }
+            }
+        )
+        // Keep observer alive (app delegate lives forever)
+        _ = openNotchObserver
 
         if coordinator.firstLaunch {
             DispatchQueue.main.async {
