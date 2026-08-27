@@ -27,12 +27,20 @@ jobs:
             BUILD_DIR="$PWD/build" \
             clean build 2>&1 | tee build.log
 
+      - name: Package app as zip (preserves bundle)
+        if: success()
+        run: |
+          ditto -c -k --keepParent "build/Release/boringNotch.app" "boringNotch-ai.zip"
+          echo "::group::zip contents (key files)"
+          unzip -l boringNotch-ai.zip | grep -E "MacOS/boringNotch|Contents/Info.plist" || true
+          echo "::endgroup::"
+
       - name: Upload app artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: boringNotch-ai
-          path: build/Release/boringNotch.app
+          path: boringNotch-ai.zip
           retention-days: 30
 
       - name: Summarize build errors
