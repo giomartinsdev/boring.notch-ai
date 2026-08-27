@@ -16,6 +16,7 @@ struct AIAgentSettingsView: View {
     @Default(.aiAgentServerPassword) var password
     @Default(.aiAgentServerBinary) var binary
     @Default(.aiAgentWorkspace) var workspace
+    @Default(.aiAgentModel) var model
 
     var body: some View {
         Form {
@@ -35,6 +36,9 @@ struct AIAgentSettingsView: View {
                 TextField("Workspace path", text: $workspace)
                     .textFieldStyle(.roundedBorder)
                     .help("Project directory the agent operates on, e.g. /Users/you/projects/myapp")
+                TextField("Model (optional, e.g. hy3-free)", text: $model)
+                    .textFieldStyle(.roundedBorder)
+                    .help("Leave empty to use opencode’s default. Use a free model id like hy3-free.")
             }
 
             Section("Authentication") {

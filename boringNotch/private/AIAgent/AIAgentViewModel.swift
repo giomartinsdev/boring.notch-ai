@@ -99,10 +99,17 @@ final class AIAgentViewModel: ObservableObject {
 
     func createSession() async {
             struct CreateResponse: Decodable { let data: OpenCodeSession }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "agent": "build",
             "location": ["workspace": server.workspace, "directory": server.workspace]
         ]
+        let modelValue = Defaults[.aiAgentModel].trimmingCharacters(in: .whitespacesAndNewlines)
+        if !modelValue.isEmpty {
+            let parts = modelValue.split(separator: "/", maxSplits: 1).map(String.init)
+            let provider = parts.count == 2 ? parts[0] : "opencode"
+            let modelID = parts.count == 2 ? parts[1] : parts[0]
+            payload["model"] = ["providerID": provider, "id": modelID]
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
         do {
             let response = try await client.decode("api/session", method: "POST", body: body, as: CreateResponse.self)

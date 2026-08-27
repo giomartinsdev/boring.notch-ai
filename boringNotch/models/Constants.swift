@@ -208,4 +208,5 @@ extension Defaults.Keys {
     static let aiAgentServerPassword = Key<String>("aiAgentServerPassword", default: "")
     static let aiAgentServerBinary = Key<String>("aiAgentServerBinary", default: "")
     static let aiAgentWorkspace = Key<String>("aiAgentWorkspace", default: "")
+    static let aiAgentModel = Key<String>("aiAgentModel", default: "")
 }
