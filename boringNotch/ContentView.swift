@@ -80,6 +80,7 @@ struct ContentView: View {
         return chinWidth
     }
 
+    @ViewBuilder
     var body: some View {
         // Calculate scale based on gesture progress only
         let gestureScale: CGFloat = {
