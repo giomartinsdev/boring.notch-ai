@@ -207,7 +207,7 @@ private struct PermissionCardFull: View {
                     .buttonStyle(.borderedProminent)
                 Button("Always") { vm.approve(permission: request, always: true) }
                     .buttonStyle(.bordered)
-                Button("Deny") { vm.deny(request) }
+                Button("Deny") { vm.deny(permission: request) }
                     .buttonStyle(.bordered)
                     .tint(.red)
             }

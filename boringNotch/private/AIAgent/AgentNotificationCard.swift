@@ -430,7 +430,7 @@ struct AgentClosedIndicator: View {
                 .overlay(Capsule().strokeBorder(AgentPalette.waiting.opacity(0.35), lineWidth: 1))
         )
         .onTapGesture {
-            AgentNotificationWindowController.shared.showIfNeeded()
+            AgentNotificationWindowController.showIfNeeded()
         }
         .help("OpenCode is waiting for you")
     }

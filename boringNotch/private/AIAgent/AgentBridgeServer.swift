@@ -131,7 +131,7 @@ final class AgentBridgeServer: @unchecked Sendable {
             withUnsafeMutableBytes(of: &addr) { raw in
                 let maxLen = MemoryLayout<sockaddr_un>.size - MemoryLayout<sa_family_t>.size
                 let len = min(raw.count, maxLen, Int(strlen(cstr)) + 1)
-                raw.copyMemory(from: UnsafeRawBufferPointer(cstr, count: len))
+                raw.copyMemory(from: UnsafeRawBufferPointer(cstr, count: len), start: 0)
                 return true
             }
         }
@@ -454,8 +454,8 @@ final class AgentBridgeServer: @unchecked Sendable {
         timer.schedule(deadline: .now() + 60, repeating: 60)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            let stale = channelsLock.withLock {
-                channels.filter { Date().timeIntervalSince($0.value.lastSeen) > 120 }
+            let stale = self.channelsLock.withLock {
+                self.channels.filter { Date().timeIntervalSince($0.value.lastSeen) > 120 }
             }
             for (id, conn) in stale {
                 NSLog("[AgentBridge] dropping stale instance \(id.prefix(8))")
