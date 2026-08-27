@@ -21,7 +21,8 @@ enum OpenCodeError: LocalizedError {
     }
 }
 
-struct OpenCodeClient {
+@MainActor
+final class OpenCodeClient {
     let server: OpenCodeServerManager
     private let urlSession: URLSession
 
@@ -98,22 +99,28 @@ struct OpenCodeClient {
                     var request = try makeRequest("api/session/\(sessionID)/event")
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     let bytes = try await urlSession.bytes(for: request)
-                    for try await line in bytes.lines {
-                        let trimmed = line.trimmingCharacters(in: .whitespaces)
-                        guard !trimmed.isEmpty else { continue }
-                        let payload: String
-                        if trimmed.hasPrefix("data:") {
-                            payload = String(trimmed.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-                        } else if trimmed.hasPrefix("{") {
-                            payload = trimmed
+                    var lineBuffer = ""
+                    var dataLines: [String] = []
+                    try await self.forEachByte(bytes) { byte in
+                        guard let scalar = String(bytes: [byte], encoding: .utf8) else { return }
+                        if scalar == "\n" {
+                            let line = lineBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                            lineBuffer = ""
+                            if line.isEmpty {
+                                let payload = dataLines.joined(separator: "")
+                                dataLines.removeAll()
+                                try self.processSSEPayload(payload, continuation: continuation)
+                            } else if line.hasPrefix("data:") {
+                                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                            }
                         } else {
-                            continue
+                            lineBuffer.append(scalar)
                         }
-                        guard let eventData = payload.data(using: .utf8),
-                              let event = try? JSONDecoder().decode(AgentEvent.self, from: eventData) else {
-                            continue
-                        }
-                        continuation.yield(event)
+                    }
+                    // Flush any trailing event without a terminating blank line.
+                    if !dataLines.isEmpty {
+                        let payload = dataLines.joined(separator: "")
+                        try self.processSSEPayload(payload, continuation: continuation)
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -124,5 +131,26 @@ struct OpenCodeClient {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    private func forEachByte(
+        _ bytes: URLSession.AsyncBytes,
+        _ body: (UInt8) throws -> Void
+    ) async throws {
+        for try await byte in bytes {
+            try body(byte)
+        }
+    }
+
+    private func processSSEPayload(
+        _ payload: String,
+        continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation
+    ) throws {
+        guard !payload.isEmpty,
+              let eventData = payload.data(using: .utf8),
+              let event = try? JSONDecoder().decode(AgentEvent.self, from: eventData) else {
+            return
+        }
+        continuation.yield(event)
     }
 }
