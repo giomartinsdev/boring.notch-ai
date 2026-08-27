@@ -54,6 +54,13 @@ jobs:
           echo "== BUILT_PRODUCTS_DIR =="
           xcodebuild -target boringNotch -configuration Release -showBuildSettings 2>/dev/null | grep -E "BUILT_PRODUCTS_DIR|TARGET_BUILD_DIR|EXECUTABLE_PATH" | head
 
+      - name: Ad-hoc codesign (so embedded frameworks pass library validation)
+        if: success()
+        run: |
+          set -euo pipefail
+          codesign --force --deep --sign - "build/Release/boringNotch.app"
+          codesign --verify --verbose=2 "build/Release/boringNotch.app" || true
+
       - name: Package app as zip (preserves bundle)
         if: success()
         run: |
