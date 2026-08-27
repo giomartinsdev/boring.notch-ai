@@ -11,9 +11,10 @@ import Defaults
 
 struct AIAgentPanel: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
-    @State private var questionAnswer: String = ""
+    @State private var draft: String = ""
 
     private var statusColor: Color {
+        if vm.isWorking { return .orange }
         switch vm.connectionState {
         case .connected: return .green
         case .connecting: return .yellow
@@ -55,6 +56,11 @@ struct AIAgentPanel: View {
                 .frame(width: 8, height: 8)
             Text("AI Agent")
                 .font(.caption.weight(.semibold))
+            if vm.isWorking {
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 10, height: 10)
+            }
             Text(vm.agentStatus)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -144,20 +150,26 @@ struct AIAgentPanel: View {
 
     private var promptBar: some View {
         HStack(spacing: 6) {
-            TextField("Ask your agent…", text: $vm.promptText, onCommit: { vm.sendPrompt() })
+            TextField("Ask your agent…", text: $draft, onCommit: send)
                 .textFieldStyle(.plain)
                 .padding(6)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor).opacity(0.6)))
-            Button(action: { vm.sendPrompt() }) {
+            Button(action: send) {
                 Image(systemName: "paperplane.fill")
             }
             .buttonStyle(.plain)
-            .disabled(vm.promptText.trimmingCharacters(in: .whitespaces).isEmpty)
+            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             Button(action: { vm.interrupt() }) {
                 Image(systemName: "stop.fill")
             }
             .buttonStyle(.plain)
             .help("Interrupt")
         }
+    }
+
+    private func send() {
+        let text = draft
+        draft = ""
+        vm.sendPrompt(text)
     }
 }

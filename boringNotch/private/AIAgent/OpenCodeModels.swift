@@ -170,3 +170,14 @@ struct DisplayMessage: Identifiable, Equatable {
     let role: MessageRole
     let text: String
 }
+
+// MARK: - Model catalog (for the picker)
+
+struct ModelOption: Identifiable, Hashable {
+    let providerID: String
+    let id: String
+    let name: String
+    var ref: String { "\(providerID)/\(id)" }
+    var display: String { name.isEmpty ? ref : "\(name) (\(ref))" }
+    var id: String { ref }
+}

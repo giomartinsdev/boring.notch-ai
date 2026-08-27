@@ -34,6 +34,7 @@ final class AIAgentViewModel: ObservableObject {
     @Published var promptText: String = ""
     @Published var agentStatus: String = "Idle"
     @Published var isWorking: Bool = false
+    @Published var availableModels: [ModelOption] = []
 
     private var streamTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
@@ -71,6 +72,7 @@ final class AIAgentViewModel: ObservableObject {
         }
         connectionState = .connected
         await refreshSessions()
+        await fetchModels()
         if selectedSessionID == nil, let first = sessions.first {
             selectedSessionID = first.id
         }
@@ -199,12 +201,12 @@ final class AIAgentViewModel: ObservableObject {
 
     // MARK: - Actions
 
-    func sendPrompt() {
-        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let sessionID = selectedSessionID, !text.isEmpty else { return }
+    func sendPrompt(_ text: String? = nil) {
+        let final = (text ?? promptText).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let sessionID = selectedSessionID, !final.isEmpty else { return }
         promptText = ""
         Task {
-            let payload: [String: Any] = ["prompt": ["text": text]]
+            let payload: [String: Any] = ["prompt": ["text": final]]
             guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
             do {
                 _ = try await client.data("api/session/\(sessionID)/prompt", method: "POST", body: body)
@@ -251,24 +253,54 @@ final class AIAgentViewModel: ObservableObject {
     // MARK: - Deriving UI state from events
 
     private func recomputeStatus() {
-        guard let last = events.last else {
-            agentStatus = "Idle"
-            isWorking = false
-            return
+        var stepOpen = false
+        var textOpen = false
+        var lastFailed = false
+        for e in events {
+            switch e.type {
+            case "session.next.step.started": stepOpen = true
+            case "session.next.step.ended": stepOpen = false
+            case "session.next.text.started": textOpen = true
+            case "session.next.text.ended": textOpen = false
+            case "session.next.step.failed": lastFailed = true
+            default: break
+            }
         }
-        let type = last.type
-        if type.contains("step.started") || type.contains("prompted") || type.contains("prompt.admitted") || type.contains("text.started") || type.contains("text.delta") {
-            agentStatus = "Working…"
-            isWorking = true
-        } else if type.contains("step.failed") {
+        let working = stepOpen || textOpen
+        isWorking = working
+        if lastFailed && !working {
             agentStatus = "Error"
-            isWorking = false
-        } else if type.contains("step.completed") || type.contains("message") {
-            agentStatus = "Idle"
-            isWorking = false
+        } else if working {
+            agentStatus = "Working…"
         } else {
             agentStatus = "Idle"
-            isWorking = false
+        }
+    }
+
+    // MARK: - Model catalog
+
+    func fetchModels() async {
+        do {
+            struct ProvidersResp: Decodable { let data: [ProviderEntry] }
+            struct ProviderEntry: Decodable { let id: String; let name: String? }
+            struct ModelsResp: Decodable { let data: [RawModel] }
+            struct RawModel: Decodable { let id: String; let providerID: String?; let name: String? }
+
+            let provs = try await client.decode("api/provider", as: ProvidersResp.self).data
+            var options: [ModelOption] = []
+            for p in provs {
+                guard let models = try? await client.decode(
+                    "api/model",
+                    query: [URLQueryItem(name: "provider", value: p.id)],
+                    as: ModelsResp.self
+                ).data else { continue }
+                for m in models {
+                    options.append(ModelOption(providerID: m.providerID ?? p.id, id: m.id, name: m.name ?? m.id))
+                }
+            }
+            await MainActor.run { self.availableModels = options.sorted { $0.ref < $1.ref } }
+        } catch {
+            // Non-fatal: the picker simply stays empty.
         }
     }
 

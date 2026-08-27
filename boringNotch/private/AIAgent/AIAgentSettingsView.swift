@@ -17,6 +17,7 @@ struct AIAgentSettingsView: View {
     @Default(.aiAgentServerBinary) var binary
     @Default(.aiAgentWorkspace) var workspace
     @Default(.aiAgentModel) var model
+    @ObservedObject private var vm = AIAgentViewModel.shared
 
     var body: some View {
         Form {
@@ -36,9 +37,13 @@ struct AIAgentSettingsView: View {
                 TextField("Workspace path", text: $workspace)
                     .textFieldStyle(.roundedBorder)
                     .help("Project directory the agent operates on, e.g. /Users/you/projects/myapp")
-                TextField("Model (optional, e.g. hy3-free)", text: $model)
-                    .textFieldStyle(.roundedBorder)
-                    .help("Leave empty to use opencode’s default. Use a free model id like hy3-free.")
+                Picker("Model", selection: $model) {
+                    Text("Default (opencode)").tag("")
+                    ForEach(vm.availableModels) { option in
+                        Text(option.display).tag(option.ref)
+                    }
+                }
+                .onAppear { Task { await vm.fetchModels() } }
             }
 
             Section("Authentication") {
@@ -54,6 +59,9 @@ struct AIAgentSettingsView: View {
                 Button("Open control window") {
                     AIAgentViewModel.shared.activate()
                     AIAgentWindowController.shared.showWindow()
+                }
+                Button("Refresh models") {
+                    Task { await vm.fetchModels() }
                 }
             }
         }

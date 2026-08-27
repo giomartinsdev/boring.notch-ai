@@ -12,6 +12,7 @@ import Defaults
 
 struct AIAgentFullView: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
+    @State private var draft: String = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -162,9 +163,9 @@ struct AIAgentFullView: View {
 
     private var promptBar: some View {
         HStack(spacing: 8) {
-            TextField("Send a prompt to your agent…", text: $vm.promptText, onCommit: { vm.sendPrompt() })
+            TextField("Send a prompt to your agent…", text: $draft, onCommit: send)
                 .textFieldStyle(.roundedBorder)
-            Button(action: { vm.sendPrompt() }) {
+            Button(action: send) {
                 Image(systemName: "paperplane.fill")
             }
             Button(action: { vm.interrupt() }) {
@@ -173,5 +174,11 @@ struct AIAgentFullView: View {
             .help("Interrupt")
         }
         .padding(10)
+    }
+
+    private func send() {
+        let text = draft
+        draft = ""
+        vm.sendPrompt(text)
     }
 }
