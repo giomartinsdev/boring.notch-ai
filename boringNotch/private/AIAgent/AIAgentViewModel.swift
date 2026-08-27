@@ -139,6 +139,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
             NSLog("[Agent] failed to start bridge server")
         }
         AgentPluginInstaller.ensureInstalled()
+        loadModelsFromConfig()
         launchOpenCodeIfNeeded(force: false)
     }
 
@@ -311,11 +312,14 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         case let .promptSent(sid, text):
             upsertSession(id: sid, instanceID: instanceID) { s in
                 s.lastPrompt = stripWrappingQuotes(text)
+                s.phase = .busy
+                s.wasBusy = true
             }
 
         case let .assistantText(sid, text):
             upsertSession(id: sid, instanceID: instanceID) { s in
                 s.lastReply = text
+                if s.phase == .idle || s.phase == .waitingAnswer { s.phase = .busy }
             }
 
         case let .toolStart(sid, tool, _):
@@ -647,12 +651,43 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     // MARK: Models
 
     func fetchModels(instanceID: String) async {
+        // OpenCode's live /api/model endpoint doesn't enumerate custom npm
+        // providers, so seed the list from its config file (authoritative for
+        // what the user can actually pick), then merge anything the API knows.
+        loadModelsFromConfig()
         guard let list: OCModelList = await bridge.command(
             on: instanceID, method: "GET", path: "/api/model", as: OCModelList.self) else { return }
-        let active = list.data.filter { $0.status != "deprecated" }
-        availableModels = active.sorted {
-            ($0.name ?? $0.id) < ($1.name ?? $1.id)
+        let live = list.data.filter { $0.status != "deprecated" }
+        guard !live.isEmpty else { return }
+        var merged = Dictionary(uniqueKeysWithValues: availableModels.map { ($0.ref, $0) })
+        for m in live { merged[m.ref] = m }
+        availableModels = merged.values.sorted { ($0.name ?? $0.id) < ($1.name ?? $1.id) }
+    }
+
+    /// Reads the available models from OpenCode's config so the picker works
+    /// even when the runtime API returns an empty list (custom providers).
+    private func loadModelsFromConfig() {
+        let base = (NSHomeDirectory() as NSString).appendingPathComponent(".config/opencode")
+        let candidates = ["opencode.json", "settings.json", "config.json"]
+        var items: [OCModelList.Item] = []
+        for name in candidates {
+            let url = URL(fileURLWithPath: (base as NSString).appendingPathComponent(name))
+            guard let data = try? Data(contentsOf: url),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            guard let providers = obj["provider"] as? [String: [String: Any]] else { continue }
+            for (providerID, pdict) in providers {
+                guard let models = pdict["models"] as? [String: Any] else { continue }
+                for (modelID, mval) in models {
+                    let pretty = (mval as? [String: Any])?["name"] as? String ?? modelID
+                    items.append(OCModelList.Item(id: modelID, providerID: providerID, name: pretty, status: "available"))
+                }
+            }
         }
+        guard !items.isEmpty else { return }
+        let existing = Dictionary(uniqueKeysWithValues: availableModels.map { ($0.ref, $0) })
+        var merged = existing
+        for m in items { merged[m.ref] = m }
+        availableModels = merged.values.sorted { ($0.name ?? $0.id) < ($1.name ?? $1.id) }
     }
 
     func switchModel(_ model: OCModelList.Item) async {
