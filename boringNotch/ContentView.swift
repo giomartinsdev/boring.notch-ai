@@ -346,33 +346,25 @@ struct ContentView: View {
               }
               .zIndex(2)
             if vm.notchState == .open {
-                ZStack {
-                    VStack {
-                        switch coordinator.currentView {
-                        case .home:
-                            NotchHomeView(albumArtNamespace: albumArtNamespace)
-                        case .shelf:
-                            ShelfView()
-                        case .agent:
-                            AIAgentPanel()
-                        }
-                    }
-                    .transition(
-                        .scale(scale: 0.8, anchor: .top)
-                        .combined(with: .opacity)
-                        .animation(.smooth(duration: 0.35))
-                    )
-                    .zIndex(1)
-                    .allowsHitTesting(vm.notchState == .open)
-                    .opacity(gestureProgress != 0 ? 1.0 - min(abs(gestureProgress) * 0.1, 0.3) : 1.0)
-
-                    if agentVM.hasPendingApproval || agentVM.activeDoneCard != nil {
-                        AgentNotificationSurface()
-                            .transition(.opacity.combined(with: .move(edge: .top)))
-                            .zIndex(2)
+                VStack {
+                    switch coordinator.currentView {
+                    case .home:
+                        NotchHomeView(albumArtNamespace: albumArtNamespace)
+                    case .shelf:
+                        ShelfView()
+                    case .agent:
+                        AIAgentPanel()
                     }
                 }
-        }
+                .transition(
+                    .scale(scale: 0.8, anchor: .top)
+                    .combined(with: .opacity)
+                    .animation(.smooth(duration: 0.35))
+                )
+                .zIndex(1)
+                .allowsHitTesting(vm.notchState == .open)
+                .opacity(gestureProgress != 0 ? 1.0 - min(abs(gestureProgress) * 0.1, 0.3) : 1.0)
+            }
         .onDrop(of: [.fileURL, .url, .utf8PlainText, .plainText, .data], delegate: GeneralDropTargetDelegate(isTargeted: $vm.generalDropTargeting))
     }
 
