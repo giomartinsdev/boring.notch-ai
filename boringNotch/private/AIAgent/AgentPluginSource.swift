@@ -11,7 +11,8 @@ import Foundation
 enum AgentPluginSource {
     static let fileName = "boring-notch.js"
 
-    static let source = #"// Boring Notch bridge plugin for OpenCode.
+    static let source = ##"""
+// Boring Notch bridge plugin for OpenCode.
 //
 // Keeps a persistent Unix-socket channel open to the Boring Notch app and:
 //   - forwards live agent events (sessions, prompts, tools, errors)
@@ -615,5 +616,6 @@ export default async ({ client, serverUrl }) => {
     });
   }
 };
-"#
+
+"""##
 }
