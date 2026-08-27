@@ -131,7 +131,7 @@ final class AgentBridgeServer: @unchecked Sendable {
             withUnsafeMutableBytes(of: &addr) { raw in
                 let maxLen = MemoryLayout<sockaddr_un>.size - MemoryLayout<sa_family_t>.size
                 let len = min(raw.count, maxLen, Int(strlen(cstr)) + 1)
-                raw.copyMemory(from: UnsafeRawBufferPointer(cstr, count: len), at: 0)
+                raw.baseAddress?.copyMemory(from: cstr, byteCount: len)
                 return true
             }
         }
