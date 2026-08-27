@@ -177,8 +177,15 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         process.currentDirectoryURL = URL(fileURLWithPath: ws)
 
         var env = ProcessInfo.processInfo.environment
-        let extra = (NSHomeDirectory() as NSString).appendingPathComponent(".opencode/bin")
-        env["PATH"] = [extra, env["PATH"]].compactMap { $0 }.joined(separator: ":")
+        let home = NSHomeDirectory()
+        env["HOME"] = home
+        env["USER"] = NSUserName()
+        env["LOGNAME"] = NSUserName()
+        env["SHELL"] = "/bin/zsh"
+        env["TERM"] = "xterm-256color"
+        let extra = (home as NSString).appendingPathComponent(".opencode/bin")
+        let fallbackPath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = [extra, env["PATH"], fallbackPath].compactMap { $0 }.joined(separator: ":")
         process.environment = env
 
         process.standardInput = nil
