@@ -98,7 +98,7 @@ final class OpenCodeClient {
                 do {
                     var request = try makeRequest("api/session/\(sessionID)/event")
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    let bytes = try await urlSession.bytes(for: request)
+                    let (bytes, _) = try await urlSession.bytes(for: request)
                     var lineBuffer = ""
                     var dataLines: [String] = []
                     try await self.forEachByte(bytes) { byte in

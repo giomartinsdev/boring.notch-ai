@@ -18,6 +18,7 @@ jobs:
 
       - name: Build boringNotch (unsigned)
         run: |
+          set -euo pipefail
           xcodebuild -target boringNotch -configuration Release \
             -destination 'generic/platform=macOS' \
             CODE_SIGNING_ALLOWED=NO \
@@ -26,6 +27,20 @@ jobs:
             ONLY_ACTIVE_ARCH=NO \
             BUILD_DIR="$PWD/build" \
             clean build 2>&1 | tee build.log
+
+      - name: Verify executable exists
+        run: |
+          set -euo pipefail
+          BIN="build/Release/boringNotch.app/Contents/MacOS/boringNotch"
+          if [ ! -f "$BIN" ]; then
+            echo "::error::Built .app is missing its executable at $BIN"
+            echo "== build/Release listing =="
+            ls -la "build/Release/" || true
+            echo "== MacOS folder =="
+            ls -la "build/Release/boringNotch.app/Contents/MacOS/" || true
+            exit 1
+          fi
+          echo "Executable OK: $(stat -f%z "$BIN") bytes"
 
       - name: Debug build output
         if: success()
