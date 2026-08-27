@@ -183,6 +183,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         env["LOGNAME"] = NSUserName()
         env["SHELL"] = "/bin/zsh"
         env["TERM"] = "xterm-256color"
+        env["BORING_NOTCH_MANAGED"] = "1"
         let extra = (home as NSString).appendingPathComponent(".opencode/bin")
         let fallbackPath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["PATH"] = [extra, env["PATH"], fallbackPath].compactMap { $0 }.joined(separator: ":")
