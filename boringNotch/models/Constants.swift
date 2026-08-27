@@ -199,4 +199,13 @@ extension Defaults.Keys {
     }
 
     static let didClearLegacyURLCacheV1 = Key<Bool>("didClearLegacyURLCache_v1", default: false)
+
+    // MARK: AI Agent control (opencode)
+    static let aiAgentEnabled = Key<Bool>("aiAgentEnabled", default: false)
+    static let aiAgentAutoLaunch = Key<Bool>("aiAgentAutoLaunch", default: true)
+    static let aiAgentServerURL = Key<String>("aiAgentServerURL", default: "http://127.0.0.1:4096")
+    static let aiAgentServerUsername = Key<String>("aiAgentServerUsername", default: "opencode")
+    static let aiAgentServerPassword = Key<String>("aiAgentServerPassword", default: "")
+    static let aiAgentServerBinary = Key<String>("aiAgentServerBinary", default: "")
+    static let aiAgentWorkspace = Key<String>("aiAgentWorkspace", default: "")
 }

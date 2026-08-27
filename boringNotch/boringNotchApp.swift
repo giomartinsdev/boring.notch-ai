@@ -85,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         MusicManager.shared.destroy()
         cleanupDragDetectors()
         cleanupWindows()
+        OpenCodeServerManager.shared.stop()
         XPCHelperClient.shared.stopMonitoringAccessibilityAuthorization()
     }
 
@@ -421,6 +422,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupDragDetectors()
+
+        // Start (or connect to) the opencode agent server if the feature is enabled.
+        AIAgentViewModel.shared.activate()
 
         if coordinator.firstLaunch {
             DispatchQueue.main.async {
