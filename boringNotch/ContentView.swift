@@ -214,6 +214,12 @@ struct ContentView: View {
                             }
                         }
                     }
+                    .onChange(of: coordinator.currentView) { _, view in
+                        // Only the agent surfaces host text fields; the panel
+                        // stays key-incapable everywhere else so the notch
+                        // never steals keyboard focus from the active app.
+                        BoringNotchSkyLightWindow.allowsKeyFocus = (view == .agent || view == .agentApproval)
+                    }
                     .onChange(of: vm.isBatteryPopoverActive) {
                         if !vm.isBatteryPopoverActive && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
                             hoverTask?.cancel()
