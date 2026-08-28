@@ -113,7 +113,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     /// Prompts typed while the session is busy in the terminal, keyed by
     /// session; flushed automatically the moment the session goes idle.
     /// Persisted so an app relaunch doesn't eat messages waiting to send.
-    @Published private(set) var queuedPrompts: [String: [String]] = Self.restoreQueuedPrompts() {
+    @Published private(set) var queuedPrompts: [String: [String]] = AIAgentViewModel.restoreQueuedPrompts() {
         didSet { persistQueuedPrompts() }
     }
 
