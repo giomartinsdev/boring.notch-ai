@@ -176,16 +176,7 @@ struct ContentView: View {
                     }
                     .onReceive(NotificationCenter.default.publisher(for: .sharingDidFinish)) { _ in
                         if vm.notchState == .open && !isHovering && !vm.isBatteryPopoverActive {
-                            hoverTask?.cancel()
-                            hoverTask = Task {
-                                try? await Task.sleep(for: .milliseconds(100))
-                                guard !Task.isCancelled else { return }
-                                await MainActor.run {
-                                    if self.vm.notchState == .open && !self.isHovering && !self.vm.isBatteryPopoverActive && !SharingStateManager.shared.preventNotchClose {
-                                        self.vm.close()
-                                    }
-                                }
-                            }
+                            scheduleAutoClose()
                         }
                     }
                     .onChange(of: vm.notchState) { _, newState in
@@ -222,16 +213,7 @@ struct ContentView: View {
                     }
                     .onChange(of: vm.isBatteryPopoverActive) {
                         if !vm.isBatteryPopoverActive && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
-                            hoverTask?.cancel()
-                            hoverTask = Task {
-                                try? await Task.sleep(for: .milliseconds(100))
-                                guard !Task.isCancelled else { return }
-                                await MainActor.run {
-                                    if !self.vm.isBatteryPopoverActive && !self.isHovering && self.vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
-                                        self.vm.close()
-                                    }
-                                }
-                            }
+                            scheduleAutoClose()
                         }
                     }
                     .sensoryFeedback(.alignment, trigger: haptics)
@@ -567,6 +549,23 @@ struct ContentView: View {
     }
 
     // MARK: - Hover Management
+
+    /// Shared auto-close path: wait a beat, then close the notch if nothing
+    /// (hover, popover, sharing) still needs it open. Extracted from three
+    /// identical inline tasks — the body's modifier chain otherwise grows
+    /// past what the type-checker tolerates.
+    private func scheduleAutoClose() {
+        hoverTask?.cancel()
+        hoverTask = Task {
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if self.vm.notchState == .open && !self.isHovering && !self.vm.isBatteryPopoverActive && !SharingStateManager.shared.preventNotchClose {
+                    self.vm.close()
+                }
+            }
+        }
+    }
 
     private func handleHover(_ hovering: Bool) {
         if coordinator.firstLaunch { return }
