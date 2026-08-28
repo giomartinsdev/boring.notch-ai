@@ -82,24 +82,28 @@ struct ContentView: View {
         return chinWidth
     }
 
-    // MARK: Agent approval expansion
+    // MARK: Agent surface expansion
 
-    /// Extra vertical room the notch gets while showing the agent approval
-    /// surface, so decisions have space for detail text, options and buttons.
-    static let agentApprovalExtraHeight: CGFloat = 120
+    /// Extra room the notch gets on agent surfaces, so approval cards and
+    /// the chat panel are actually usable instead of cramped.
+    static let agentApprovalExtraSize = CGSize(width: 160, height: 120)
+    static let agentChatExtraSize = CGSize(width: 384, height: 230)
 
-    private var agentApprovalExpanded: Bool {
-        vm.notchState == .open && coordinator.currentView == .agentApproval
+    private var agentSurfaceExpanded: Bool {
+        vm.notchState == .open
+            && (coordinator.currentView == .agentApproval || coordinator.currentView == .agent)
     }
 
-    private var effectiveOpenHeight: CGFloat {
-        agentApprovalExpanded ? openNotchSize.height + Self.agentApprovalExtraHeight : vm.notchSize.height
+    private var effectiveOpenSize: CGSize {
+        guard agentSurfaceExpanded else { return vm.notchSize }
+        let extra = coordinator.currentView == .agent ? Self.agentChatExtraSize : Self.agentApprovalExtraSize
+        return CGSize(width: openNotchSize.width + extra.width,
+                      height: openNotchSize.height + extra.height)
     }
 
     private var effectiveWindowSize: CGSize {
-        agentApprovalExpanded
-            ? CGSize(width: windowSize.width,
-                     height: openNotchSize.height + Self.agentApprovalExtraHeight + shadowPadding)
+        agentSurfaceExpanded
+            ? CGSize(width: effectiveOpenSize.width, height: effectiveOpenSize.height + shadowPadding)
             : windowSize
     }
 
@@ -141,7 +145,7 @@ struct ContentView: View {
                     )
                 
                 mainLayout
-                    .frame(height: vm.notchState == .open ? effectiveOpenHeight : nil)
+                    .frame(height: vm.notchState == .open ? effectiveOpenSize.height : nil)
                     .conditionalModifier(true) { view in
                         let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
                         let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
@@ -247,7 +251,7 @@ struct ContentView: View {
         .padding(.bottom, 8)
         .frame(maxWidth: effectiveWindowSize.width, maxHeight: effectiveWindowSize.height, alignment: .top)
         .compositingGroup()
-        .background(NotchWindowResizer(targetHeight: effectiveWindowSize.height))
+        .background(NotchWindowResizer(targetSize: effectiveWindowSize))
         .scaleEffect(
             x: gestureScale,
             y: gestureScale,
@@ -560,8 +564,12 @@ struct ContentView: View {
     private func handleHover(_ hovering: Bool) {
         if coordinator.firstLaunch { return }
         hoverTask?.cancel()
-        
+
         if hovering {
+            // Borderless panels inherit whatever cursor the window below the
+            // notch had when the mouse entered — reset to the standard arrow.
+            DispatchQueue.main.async { NSCursor.arrow.set() }
+
             withAnimation(animationSpring) {
                 isHovering = true
             }
@@ -706,12 +714,12 @@ struct GeneralDropTargetDelegate: DropDelegate {
         .frame(width: vm.notchSize.width, height: vm.notchSize.height)
 }
 
-/// Keeps the notch panel's height in sync with the SwiftUI content: when the
-/// agent approval surface asks for extra vertical room the (borderless,
-/// fixed-size) window itself grows — anchored to the top edge of the screen —
-/// and shrinks back when the surface goes away.
+/// Keeps the notch panel's size in sync with the SwiftUI content: when an
+/// agent surface asks for extra room the (borderless, fixed-size) window
+/// itself grows — anchored to the top edge and horizontally centered — and
+/// shrinks back when the surface goes away.
 private struct NotchWindowResizer: NSViewRepresentable {
-    let targetHeight: CGFloat
+    let targetSize: CGSize
 
     func makeNSView(context: Context) -> NSView {
         NSView()
@@ -719,12 +727,14 @@ private struct NotchWindowResizer: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         guard let window = view.window else { return }
-        let current = window.frame.height
-        guard abs(current - targetHeight) > 0.5 else { return }
+        let current = window.frame.size
+        guard abs(current.width - targetSize.width) > 0.5
+              || abs(current.height - targetSize.height) > 0.5 else { return }
 
         var frame = window.frame
-        frame.size.height = targetHeight
-        frame.origin.y -= (targetHeight - current) // keep the top edge fixed
+        frame.size = targetSize
+        frame.origin.x -= (targetSize.width - current.width) / 2 // stay centered
+        frame.origin.y -= (targetSize.height - current.height)   // keep the top edge fixed
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.35
