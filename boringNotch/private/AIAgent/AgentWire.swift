@@ -2,20 +2,18 @@
 //  AgentWire.swift
 //  boringNotch
 //
-//  Wire protocol shared with the OpenCode bridge plugin
-//  (boring-notch-opencode.js). All messages are single-line JSON objects.
+//  Wire models shared with the Claude Code hook integration
+//  (~/.claude/hooks/boring-notch/boring-notify.sh + boring-decide.sh).
 //
-//  Plugin → App:
-//    hello          { instanceID, serverUrl, authHeader, managed, directory, pid }
-//    event          { type, sessionID, directory?, title?, text?, reply?, ... }
-//    permission     { requestID, sessionID, permission, patterns, label, command, description }
-//    question       { requestID, sessionID, questions: [ { question, header, options, multiple, custom } ] }
-//    command.result { id, ok, status, body? / error? }
-//    ping           { instanceID }
+//  Hook scripts → App (HTTP POST /v1/hook, JSON body):
+//    the raw Claude Code hook payload:
+//      { hook_event_name, session_id, cwd, transcript_path,
+//        tool_name?, tool_input?, prompt?, message?, stop_hook_active? }
 //
-//  App → Plugin (on the same connection):
-//    directive      { requestID, type: allow | always | deny | answer | cancel, answers?, reason? }
-//    command        { id, method, path, body? }   (executed through the plugin's in-process fetch)
+//  App → Hook script (HTTP response body, PreToolUse only):
+//    a Claude Code hookSpecificOutput JSON (permissionDecision allow/deny),
+//    or an empty body meaning "no decision — fall through to the normal
+//    permission flow".
 //
 
 import Foundation
@@ -68,33 +66,17 @@ indirect enum AgentJSON: Codable, Equatable {
     static func decode<T: Decodable>(_ type: T.Type, from value: AgentJSON?) -> T? {
         guard let value else { return nil }
         guard let data = try? JSONEncoder().encode(value) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+        return try? JSONDecoder().decode(type.self, from: data)
     }
 }
 
-// MARK: - Envelope
-
-struct AgentWireMessage: Decodable {
-    let v: Int?
-    let kind: String
-    let data: AgentJSON?
-}
-
-struct AgentWireOutgoing: Encodable {
-    let v: Int
-    let kind: String
-    let data: AgentJSON?
-}
-
-// MARK: - Hello
+// MARK: - Live instance (a Claude Code process that fired hooks)
 
 struct AgentInstanceInfo: Identifiable, Equatable {
-    let id: String          // instanceID from the plugin
-    var serverUrl: String
-    var authHeader: String?
-    var managed: Bool
+    let id: String          // session id reported by the hook
     var directory: String
     var pid: Int?
+    var managed: Bool
     var lastSeen: Date
 
     var shortDirectory: String {
@@ -102,100 +84,32 @@ struct AgentInstanceInfo: Identifiable, Equatable {
     }
 }
 
-// MARK: - Events
+// MARK: - Events (normalized from hook payloads)
 
-enum AgentEvent {
-    case sessionStart(sessionID: String, directory: String?, title: String?)
-    case sessionEnd(sessionID: String)
-    case sessionTitle(sessionID: String, title: String)
-    case sessionBusy(sessionID: String)
-    case sessionIdle(sessionID: String, reply: String?)
-    case sessionError(sessionID: String, message: String)
-    case promptSent(sessionID: String, text: String)
-    case assistantText(sessionID: String, text: String)
-    case toolStart(sessionID: String, tool: String, detail: String?)
-    case toolEnd(sessionID: String, tool: String, status: String)
-    case permissionSettled(sessionID: String, requestID: String?)
-    case questionSettled(sessionID: String, requestID: String?)
-
-    /// Parses the normalized event payload sent by the plugin.
-    /// Returns the event plus the session it belongs to.
-    static func parse(_ data: AgentJSON) -> (sessionID: String, event: AgentEvent)? {
-        guard let sessionID = data["sessionID"]?.string else { return nil }
-        let type = data["type"]?.string ?? ""
-        switch type {
-        case "session.start":
-            return (sessionID, .sessionStart(
-                sessionID: sessionID,
-                directory: data["directory"]?.string,
-                title: data["title"]?.string))
-        case "session.end":
-            return (sessionID, .sessionEnd(sessionID: sessionID))
-        case "session.title":
-            guard let title = data["title"]?.string else { return nil }
-            return (sessionID, .sessionTitle(sessionID: sessionID, title: title))
-        case "session.busy":
-            return (sessionID, .sessionBusy(sessionID: sessionID))
-        case "session.idle":
-            return (sessionID, .sessionIdle(sessionID: sessionID, reply: data["reply"]?.string))
-        case "session.error":
-            return (sessionID, .sessionError(sessionID: sessionID, message: data["message"]?.string ?? "Unknown error"))
-        case "prompt.sent":
-            guard let text = data["text"]?.string else { return nil }
-            return (sessionID, .promptSent(sessionID: sessionID, text: text))
-        case "assistant.text":
-            guard let text = data["text"]?.string else { return nil }
-            return (sessionID, .assistantText(sessionID: sessionID, text: text))
-        case "tool.start":
-            return (sessionID, .toolStart(
-                sessionID: sessionID,
-                tool: data["tool"]?.string ?? "tool",
-                detail: data["detail"]?.string))
-        case "tool.end":
-            return (sessionID, .toolEnd(
-                sessionID: sessionID,
-                tool: data["tool"]?.string ?? "tool",
-                status: data["status"]?.string ?? "ok"))
-        case "permission.settled":
-            return (sessionID, .permissionSettled(sessionID: sessionID, requestID: data["requestID"]?.string))
-        case "question.settled":
-            return (sessionID, .questionSettled(sessionID: sessionID, requestID: data["requestID"]?.string))
-        default:
-            return nil
-        }
-    }
+enum AgentEvent: Equatable {
+    case sessionStarted(sessionID: String, directory: String?)
+    case sessionEnded(sessionID: String)
+    case promptSubmitted(sessionID: String, text: String)
+    case toolUsed(sessionID: String, tool: String, detail: String?)
+    case stopped(sessionID: String, reply: String?)
+    case attention(sessionID: String, message: String)
+    case errored(sessionID: String, message: String)
 }
 
-// MARK: - Permission / Question requests (pending user action)
+// MARK: - Pending user action: permission
 
 struct AgentPendingPermission: Identifiable, Equatable {
-    let id: String            // requestID
+    let id: String            // bridge-generated request id
     let sessionID: String
-    let instanceID: String
-    var permission: String
-    var patterns: [String]
-    var label: String
-    var command: String
-    var descriptionText: String
+    let tool: String
+    var title: String         // human label, e.g. "Bash command"
+    var detail: String        // command line or file path
+    var input: AgentJSON?
     var directory: String?
     var arrivedAt: Date
-
-    static func parse(_ data: AgentJSON, instanceID: String) -> AgentPendingPermission? {
-        guard let id = data["requestID"]?.string,
-              let sessionID = data["sessionID"]?.string else { return nil }
-        return AgentPendingPermission(
-            id: id,
-            sessionID: sessionID,
-            instanceID: instanceID,
-            permission: data["permission"]?.string ?? "",
-            patterns: data["patterns"]?.array?.compactMap(\.string) ?? [],
-            label: data["label"]?.string ?? "Permission",
-            command: data["command"]?.string ?? "",
-            descriptionText: data["description"]?.string ?? "",
-            directory: data["directory"]?.string,
-            arrivedAt: Date())
-    }
 }
+
+// MARK: - Questions (AskUserQuestion interception)
 
 struct AgentQuestionOption: Identifiable, Equatable {
     let label: String
@@ -208,9 +122,10 @@ struct AgentQuestionItem: Identifiable, Equatable {
     let header: String
     let options: [AgentQuestionOption]
     var multiple: Bool
-    var custom: Bool
     var id: String { header.isEmpty ? question : header }
 
+    /// Builds from the AskUserQuestion tool_input shape:
+    /// { questions: [ { question, header, options: [ { label, description } ], multiSelect } ] }
     static func parse(_ json: AgentJSON) -> AgentQuestionItem? {
         guard let question = json["question"]?.string else { return nil }
         let options = (json["options"]?.array ?? []).compactMap { opt -> AgentQuestionOption? in
@@ -222,125 +137,30 @@ struct AgentQuestionItem: Identifiable, Equatable {
             question: question,
             header: json["header"]?.string ?? "",
             options: options,
-            multiple: json["multiple"]?.bool ?? false,
-            custom: json["custom"]?.bool ?? false)
+            multiple: json["multiSelect"]?.bool ?? false)
     }
 }
 
 struct AgentPendingQuestion: Identifiable, Equatable {
     let id: String
     let sessionID: String
-    let instanceID: String
     var questions: [AgentQuestionItem]
     var directory: String?
     var arrivedAt: Date
-
-    static func parse(_ data: AgentJSON, instanceID: String) -> AgentPendingQuestion? {
-        guard let id = data["requestID"]?.string,
-              let sessionID = data["sessionID"]?.string else { return nil }
-        let questions = (data["questions"]?.array ?? []).compactMap(AgentQuestionItem.parse)
-        guard !questions.isEmpty else { return nil }
-        return AgentPendingQuestion(
-            id: id,
-            sessionID: sessionID,
-            instanceID: instanceID,
-            questions: questions,
-            directory: data["directory"]?.string,
-            arrivedAt: Date())
-    }
 }
 
-// MARK: - Directives (App → Plugin replies to held requests)
+// MARK: - Decisions (App → held PreToolUse request)
 
-struct AgentDirective {
-    enum Kind {
-        case allow
-        case always
-        case deny(reason: String?)
-        case answer(answers: [[String]])
-        case cancel
-    }
-
-    let requestID: String
-    let kind: Kind
-
-    func encode() -> AgentWireOutgoing {
-        var payload: [String: AgentJSON] = ["requestID": .string(requestID)]
-        switch kind {
-        case .allow:
-            payload["type"] = .string("allow")
-        case .always:
-            payload["type"] = .string("always")
-        case .deny(let reason):
-            payload["type"] = .string("deny")
-            if let reason { payload["reason"] = .string(reason) }
-        case .answer(let answers):
-            payload["type"] = .string("answer")
-            payload["answers"] = .array(answers.map { .array($0.map(AgentJSON.string)) })
-        case .cancel:
-            payload["type"] = .string("cancel")
-        }
-        return AgentWireOutgoing(v: 1, kind: "directive", data: .object(payload))
-    }
+enum AgentDecision: Equatable {
+    case allow
+    case deny(reason: String?)
+    /// AskUserQuestion answered from the notch. Carries one answer list per
+    /// question, in the same order the questions were asked.
+    case answers([[String]])
 }
 
-// MARK: - REST passthrough models (decoded from command results)
+// MARK: - A parsed chat message ready for display.
 
-struct OCSessionList: Decodable {
-    struct Item: Decodable, Identifiable {
-        let id: String
-        var agent: String?
-        var title: String?
-        var cost: Double?
-        struct ModelRef: Decodable { let id: String; let providerID: String }
-        var model: ModelRef?
-        struct TimeInfo: Decodable { let created: Double?; var updated: Double? }
-        var time: TimeInfo?
-        struct Location: Decodable { let directory: String? }
-        var location: Location?
-    }
-    let data: [Item]
-}
-
-struct OCMessageList: Decodable {
-    struct Item: Decodable, Identifiable {
-        let id: String
-        var type: String?
-        var text: String?
-        struct Part: Decodable { let type: String?; let text: String? }
-        var content: [Part]?
-        struct TimeInfo: Decodable { let created: Double? }
-        var time: TimeInfo?
-        var error: AgentJSON?
-    }
-    let data: [Item]
-    var cursor: AgentJSON?
-}
-
-struct OCModelList: Decodable {
-    struct Item: Decodable, Identifiable {
-        let id: String
-        let providerID: String
-        var name: String?
-        var status: String?
-        
-        var ref: String { "\(providerID)/\(id)" }
-    }
-    let data: [Item]
-}
-
-struct OCSessionCreated: Decodable {
-    struct Item: Decodable { let id: String }
-    let data: Item
-}
-
-/// Single-session detail. OpenCode returns the session object directly for
-/// `GET /api/session/:id`; some builds wrap it in `{ data: ... }`.
-struct OCSessionDetail: Decodable {
-    let data: OCSessionList.Item
-}
-
-/// A parsed chat message ready for display.
 struct AgentChatMessage: Identifiable, Equatable {
     enum Role { case user, assistant, error }
     let id: String

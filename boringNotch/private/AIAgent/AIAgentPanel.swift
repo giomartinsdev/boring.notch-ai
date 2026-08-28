@@ -47,7 +47,7 @@ struct AIAgentPanel: View {
                     pulsing: vm.connected && vm.sessions.contains { $0.phase == .busy },
                     size: 8
                 )
-                Text(vm.connected ? "OpenCode" : "Waiting for OpenCode…")
+                Text(vm.connected ? "Claude Code" : (vm.claudeMissing ? "Claude Code missing" : "Claude Code"))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(vm.connected ? AgentPalette.paper : AgentPalette.paperFaint)
             }
@@ -126,7 +126,7 @@ struct AIAgentPanel: View {
                         }
                     }
                 } label: {
-                    Text(vm.selectedSession?.modelRef ?? "Select model")
+                    Text(vm.selectedModel?.name ?? vm.selectedSession?.modelRef ?? "Select model")
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(AgentPalette.paper)
                         .padding(.horizontal, 8)
@@ -160,27 +160,32 @@ struct AIAgentPanel: View {
             Image(systemName: "brain.head.profile")
                 .font(.system(size: 28))
                 .foregroundStyle(AgentPalette.paperFaint)
-            Text(vm.connected ? "No sessions yet" : "Start OpenCode to connect")
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(AgentPalette.paperSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 24)
-            if !vm.connected {
-                Button { vm.launchManagedOpenCode(respectAutoLaunch: false) } label: {
-                    Label("Launch OpenCode", systemImage: "play.fill")
+
+            if vm.claudeMissing {
+                Text("Claude Code CLI not found")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(AgentPalette.paperSecondary)
+                Text("Install it with:\nnpm install -g @anthropic-ai/claude-code")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(AgentPalette.paperFaint)
+                    .multilineTextAlignment(.center)
+            } else if vm.needsAuth {
+                Text("Claude Code needs authentication")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(AgentPalette.paperSecondary)
+                Button {
+                    ClaudeCodeAuthOpener.openTerminalLogin()
+                } label: {
+                    Label("Authenticate", systemImage: "person.badge.key.fill")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .tint(AgentPalette.paper)
-                Button { vm.restart() } label: {
-                    Label("Restart Bridge", systemImage: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(AgentPalette.waiting)
-            } else {
+                .tint(AgentPalette.completed)
+            } else if vm.sessions.isEmpty {
+                Text("No sessions yet")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(AgentPalette.paperSecondary)
                 Button { Task { await vm.startNewSession() } } label: {
                     Label("Create Session", systemImage: "plus.bubble")
                         .font(.system(size: 11, weight: .medium))
@@ -188,6 +193,10 @@ struct AIAgentPanel: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .tint(AgentPalette.completed)
+            } else {
+                Text(vm.connected ? "All caught up" : "Start Claude Code in any project to connect")
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(AgentPalette.paperSecondary)
             }
             Spacer()
         }
@@ -237,7 +246,7 @@ struct AIAgentPanel: View {
                                         ? AgentPalette.running : AgentPalette.waiting,
                                     pulsing: true, size: 7)
                                 Text(vm.selectedSession?.phase == .busy
-                                     ? "OpenCode is thinking…"
+                                     ? "Claude is thinking…"
                                      : (vm.sending ? "Sending…" : "Loading…"))
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(AgentPalette.paperFaint)
@@ -271,7 +280,7 @@ struct AIAgentPanel: View {
 
             // Input bar
             HStack(spacing: 8) {
-                TextField(vm.sending ? "Working…" : "Message…", text: $draft, axis: .vertical)
+                TextField(vm.sending || vm.isSessionRunning ? "Working…" : "Message…", text: $draft, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11.5))
                     .foregroundStyle(AgentPalette.paper)
@@ -284,10 +293,10 @@ struct AIAgentPanel: View {
                             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
                     )
-                    .disabled(vm.sending)
+                    .disabled(vm.sending || vm.isSessionRunning)
                     .onSubmit { send() }
 
-                if vm.sending {
+                if vm.sending || vm.isSessionRunning {
                     Button { vm.interrupt() } label: {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 11, weight: .bold))
@@ -348,7 +357,8 @@ private struct SessionRow: View {
                         AgentChip(text: tool, tint: AgentPalette.paperFaint)
                     }
                     if let model = session.modelRef {
-                        AgentChip(text: model, tint: AgentPalette.paperFaint)
+                        AgentChip(text: model.hasPrefix("claude/") ? String(model.dropFirst("claude/".count)) : model,
+                                  tint: AgentPalette.paperFaint)
                     }
                     if session.phase == .waitingApproval {
                         AgentChip(text: "needs you", tint: AgentPalette.waitingApproval)

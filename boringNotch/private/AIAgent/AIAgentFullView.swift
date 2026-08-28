@@ -2,7 +2,7 @@
 //  AIAgentFullView.swift
 //  boringNotch
 //
-//  Full desktop window for driving opencode: session sidebar,
+//  Full desktop window for driving Claude Code: session sidebar,
 //  transcript, prompt input, and inline approve/deny of permission
 //  and question prompts — the Vibe Island-style cockpit.
 //
@@ -194,11 +194,11 @@ private struct PermissionCardFull: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label(request.label, systemImage: "hand.raised.fill")
+            Label(request.title, systemImage: "hand.raised.fill")
                 .font(.callout.weight(.medium))
                 .foregroundStyle(.orange)
-            if !request.command.isEmpty {
-                Text(request.command)
+            if !request.detail.isEmpty {
+                Text(request.detail)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(AgentPalette.paperSecondary)
             }

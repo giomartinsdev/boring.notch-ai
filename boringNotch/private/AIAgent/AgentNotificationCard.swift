@@ -98,13 +98,13 @@ struct AgentPermissionCard: View {
         AgentCardChrome(
             tint: .orange,
             icon: "hand.raised.fill",
-            title: "OpenCode needs permission",
+            title: "Claude needs permission",
             subtitle: subtitleText,
             onDismiss: { vm.dismissCard(permission.id) }
         ) {
             VStack(alignment: .leading, spacing: 8) {
-                if !permission.command.isEmpty {
-                    Text(permission.command)
+                if !permission.detail.isEmpty {
+                    Text(permission.detail)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(AgentPalette.paper.opacity(0.85))
                         .lineLimit(2)
@@ -141,7 +141,7 @@ struct AgentPermissionCard: View {
     }
 
     private var subtitleText: String {
-        var parts = [permission.label]
+        var parts = [permission.title]
         if let dir = permission.directory, !dir.isEmpty {
             parts.append((dir as NSString).lastPathComponent)
         }
@@ -292,7 +292,7 @@ struct AgentQuestionCard: View {
     private var titleText: String {
         question.questions.first?.header.isEmpty == false
             ? question.questions.first!.header
-            : (question.questions.first?.question ?? "OpenCode asks")
+            : (question.questions.first?.question ?? "Claude asks")
     }
 
     private var subtitleText: String {
@@ -307,7 +307,7 @@ struct AgentQuestionCard: View {
     }
 
     private var dirName: String {
-        question.directory.map { ($0 as NSString).lastPathComponent } ?? "opencode"
+        question.directory.map { ($0 as NSString).lastPathComponent } ?? "claude"
     }
 }
 
@@ -432,6 +432,6 @@ struct AgentClosedIndicator: View {
         .onTapGesture {
             AgentNotificationWindowController.showIfNeeded()
         }
-        .help("OpenCode is waiting for you")
+        .help("Claude Code is waiting for you")
     }
 }

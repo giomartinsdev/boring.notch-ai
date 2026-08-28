@@ -29,7 +29,7 @@ final class AIAgentWindowController: NSWindowController {
 
     private func setupWindow() {
         guard let window else { return }
-        window.title = "Boring Notch · OpenCode Agent"
+        window.title = "Boring Notch · Claude Code"
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified

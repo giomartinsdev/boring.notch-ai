@@ -2,23 +2,23 @@
 //  AIAgentSettingsView.swift
 //  boringNotch
 //
-//  Settings pane for the OpenCode agent integration. Matches boring.notch's
+//  Settings pane for the Claude Code integration. Matches boring.notch's
 //  SettingsView style with grouped sections and clean visual hierarchy.
 //
 
 import SwiftUI
 import Defaults
-import LaunchAtLogin
 
 struct AIAgentSettingsView: View {
     @Default(.aiAgentEnabled) var enabled
     @Default(.aiAgentAutoOpen) var autoOpen
     @Default(.aiAgentNotifyOnDone) var notifyOnDone
-    @Default(.aiAgentServerURL) var serverURL
-    @Default(.aiAgentServerUsername) var username
-    @Default(.aiAgentServerPassword) var password
     @Default(.aiAgentModel) var defaultModel
+    @Default(.aiAgentWorkspace) var workspace
+    @Default(.aiAgentClaudeBinary) var claudeBinaryOverride
     @ObservedObject private var vm = AIAgentViewModel.shared
+    @State private var hooksInstalled = AgentHookInstaller.isInstalled()
+    @State private var killSwitch = AgentHookInstaller.killSwitchEnabled
 
     var body: some View {
         Form {
@@ -26,86 +26,118 @@ struct AIAgentSettingsView: View {
             Section {
                 Toggle("Enable Agent tab", isOn: $enabled)
                     .tint(.effectiveAccent)
-                Text("Adds an Agent tab to the notch and a desktop window for your opencode sessions.")
+                    .onChange(of: enabled) { _, newValue in
+                        if newValue {
+                            AIAgentViewModel.shared.activate()
+                        } else {
+                            AIAgentViewModel.shared.deactivate()
+                        }
+                    }
+                Text("Adds an Agent tab to the notch with your Claude Code sessions, and lets you approve edits and answer questions straight from the notch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            // Connection status
-            Section {
+            // Claude Code environment
+            Section("Claude Code") {
+                environmentRow(
+                    label: "CLI",
+                    ok: !vm.claudeMissing,
+                    okText: "Found at \(vm.claudeBinary)",
+                    failText: "Not found — install with: npm install -g @anthropic-ai/claude-code")
+
+                environmentRow(
+                    label: "Authentication",
+                    ok: !vm.needsAuth,
+                    okText: "Signed in",
+                    failText: "Not signed in")
+
+                if vm.needsAuth, !vm.claudeMissing {
+                    Button("Authenticate in Terminal…") {
+                        ClaudeCodeAuthOpener.openTerminalLogin()
+                    }
+                    .controlSize(.small)
+                }
+
                 HStack {
                     Circle()
                         .fill(vm.connected ? Color.green : Color.orange)
                         .frame(width: 8, height: 8)
-                    Text(vm.connected ? "Connected to OpenCode" : "Waiting for OpenCode…")
+                    Text(vm.connected
+                         ? "Bridge connected — \(vm.instances.count) live session\(vm.instances.count == 1 ? "" : "s")"
+                         : "Bridge idle — no live Claude Code sessions")
                         .font(.callout)
                         .foregroundStyle(vm.connected ? .primary : .secondary)
                     Spacer()
-                    if !vm.connected {
-                        Button("Restart Bridge") { AIAgentViewModel.shared.restart() }
-                            .controlSize(.small)
-                    }
+                    Button("Restart Bridge") { AIAgentViewModel.shared.restart() }
+                        .controlSize(.small)
                 }
                 .padding(.vertical, 2)
+            }
 
-                if vm.connected, let info = vm.instances.first {
-                    Text("Bridge: \(info.shortDirectory) · \(info.managed ? "managed" : "discovered")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            // Hook integration
+            Section("Terminal Integration") {
+                HStack {
+                    Image(systemName: hooksInstalled ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(hooksInstalled ? Color.green : .orange)
+                    Text(hooksInstalled
+                         ? "Hooks installed in ~/.claude — the notch sees every session"
+                         : "Hooks not installed")
+                        .font(.callout)
+                    Spacer()
+                    Button("Reinstall") {
+                        AgentHookInstaller.install()
+                        hooksInstalled = AgentHookInstaller.isInstalled()
+                    }
+                    .controlSize(.small)
                 }
 
-                Toggle("Auto-open notch for approvals & done", isOn: $autoOpen)
+                Toggle("Pause notch hooks (kill switch)", isOn: $killSwitch)
                     .tint(.effectiveAccent)
-                Toggle("Notify when agent finishes a task", isOn: $notifyOnDone)
+                    .onChange(of: killSwitch) { _, newValue in
+                        AgentHookInstaller.killSwitchEnabled = newValue
+                    }
+                Text("Pauses the integration without uninstalling: Claude Code behaves exactly as if the notch were gone. Approvals fall back to the normal terminal prompts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Auto-open notch for approvals & updates", isOn: $autoOpen)
                     .tint(.effectiveAccent)
-
-                Button("Install / Update OpenCode Plugin") {
-                    AgentPluginInstaller.install()
-                }
-                .controlSize(.small)
-
-                if AgentPluginInstaller.isInstalled() {
-                    Text("Plugin installed at ~/.config/opencode/plugins/boring-notch.js")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("Plugin not installed — click above to install")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+                Toggle("Notify when Claude finishes a task", isOn: $notifyOnDone)
+                    .tint(.effectiveAccent)
             }
 
             // Default model
             Section("Default Model") {
                 Picker("Model", selection: $defaultModel) {
-                    Text("Default (opencode)").tag("")
+                    Text("Claude Code default").tag("")
                     ForEach(vm.availableModels) { m in
-                        Text("\(m.name ?? m.id) (\(m.providerID))").tag("\(m.providerID)/\(m.id)")
+                        Text(m.name ?? m.id).tag(m.ref)
                     }
                 }
-                .onAppear { Task { await AIAgentViewModel.shared.fetchModels(instanceID: AIAgentViewModel.shared.bridge.primaryInstanceID ?? "") } }
-
                 if !defaultModel.isEmpty {
-                    Text("Used when creating new sessions from the notch.")
+                    Text("Used for new sessions created from the notch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
+            // Workspace
+            Section("Workspace") {
+                TextField("Default directory for new sessions", text: $workspace)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                Text("Leave empty to use your home directory.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             // Advanced
             Section("Advanced") {
-                TextField("Server URL (auto-discovered)", text: $serverURL)
+                TextField("Claude binary path (auto-detected)", text: $claudeBinaryOverride)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(true)
-                    .help("Auto-discovered from the OpenCode plugin bridge")
-
-                TextField("Username", text: $username)
-                    .textFieldStyle(.roundedBorder)
-
-                SecureField("Password (optional)", text: $password)
-                    .textFieldStyle(.roundedBorder)
-
-                Text("Credentials are stored locally and sent only to your local OpenCode server.")
+                    .autocorrectionDisabled()
+                Text("Leave empty to auto-detect. Changes apply after reopening the Agent tab.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -115,12 +147,32 @@ struct AIAgentSettingsView: View {
                 Button("Open Agent Window") {
                     AIAgentWindowController.shared.showWindow()
                 }
-                Button("Refresh Models") {
-                    Task { await AIAgentViewModel.shared.fetchModels(instanceID: AIAgentViewModel.shared.bridge.primaryInstanceID ?? "") }
-                }
             }
         }
         .formStyle(.grouped)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            hooksInstalled = AgentHookInstaller.isInstalled()
+        }
+    }
+
+    @ViewBuilder
+    private func environmentRow(label: String, ok: Bool, okText: String, failText: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(ok ? Color.green : .orange)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label)
+                    .font(.callout.weight(.medium))
+                Text(ok ? okText : failText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
     }
 }

@@ -64,7 +64,8 @@ final class AgentNotificationWindowController: NSWindowController {
 
     private func updateVisibility() {
         let vm = AIAgentViewModel.shared
-        let shouldShow = vm.hasPendingApproval || vm.activeDoneCard != nil
+        let shouldShow = Defaults[.aiAgentAutoOpen]
+            && (vm.hasPendingApproval || vm.activeDoneCard != nil)
 
         guard let window = window else { return }
 

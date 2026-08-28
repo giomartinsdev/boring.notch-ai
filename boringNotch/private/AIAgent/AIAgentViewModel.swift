@@ -2,9 +2,9 @@
 //  AIAgentViewModel.swift
 //  boringNotch
 //
-//  Central state for the OpenCode agent integration: connection tracking,
-//  live session store, pending approval cards, and chat driving through
-//  the bridge command channel.
+//  Central state for the Claude Code integration: live sessions from
+//  ~/.claude/projects transcripts, hook-driven approval/question cards,
+//  chat driving through headless `claude -p` runs, and model switching.
 //
 
 import Foundation
@@ -24,26 +24,31 @@ struct AgentSession: Identifiable, Equatable {
         case errored
     }
 
+    enum Source: Equatable {
+        case managed    // driven from the notch (headless claude -p runs)
+        case external   // user's own terminal session, observed via hooks/transcripts
+    }
+
     let id: String
-    var instanceID: String?
-    var title: String
     var directory: String?
+    var title: String
     var phase: Phase = .idle
-    var wasBusy = false
+    var source: Source = .external
     var lastPrompt: String?
     var lastReply: String?
     var lastTool: String?
     var modelRef: String?
     var updatedAt = Date()
+    var needsFirstPrompt = false
 
     var project: String {
-        guard let dir = directory, !dir.isEmpty else { return "opencode" }
+        guard let dir = directory, !dir.isEmpty else { return "claude" }
         return (dir as NSString).lastPathComponent
     }
 
     var displayTitle: String {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.isEmpty || t.hasPrefix("New session") {
+        if t.isEmpty {
             return lastPrompt.map { String($0.prefix(48)) } ?? "Session \(id.suffix(6))"
         }
         return String(t.prefix(64))
@@ -51,7 +56,6 @@ struct AgentSession: Identifiable, Equatable {
 
     static func == (lhs: AgentSession, rhs: AgentSession) -> Bool {
         lhs.id == rhs.id && lhs.phase == rhs.phase && lhs.title == rhs.title
-            && lhs.instanceID == rhs.instanceID
     }
 }
 
@@ -62,8 +66,18 @@ struct AgentDoneCard: Identifiable, Equatable {
     let sessionID: String
     var title: String
     var reply: String
-    var instanceID: String?
+    var isAttention = false
     var createdAt = Date()
+}
+
+// MARK: - Model picker entry
+
+struct AgentModel: Identifiable, Equatable {
+    let id: String
+    let providerID: String
+    let name: String?
+
+    var ref: String { "\(providerID)/\(id)" }
 }
 
 // MARK: - View model
@@ -74,10 +88,12 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     let bridge = AgentBridgeServer()
 
-    // Connection
+    // Environment
     @Published private(set) var instances: [AgentInstanceInfo] = []
-    @Published private(set) var connected: Bool = false
-    @Published private(set) var everConnected: Bool = false
+    @Published private(set) var connected = false
+    @Published private(set) var everConnected = false
+    @Published private(set) var claudeBinary = ""
+    @Published private(set) var authState: ClaudeAuthState = .needsAuth
 
     // Sessions
     @Published private(set) var sessions: [AgentSession] = []
@@ -93,13 +109,14 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     @Published private(set) var messages: [AgentChatMessage] = []
     @Published private(set) var chatLoading = false
     @Published private(set) var sending = false
-    @Published private(set) var availableModels: [OCModelList.Item] = []
-    @Published var modelPickerShowing = false
+    @Published private(set) var availableModels: [AgentModel] = []
 
+    private var runners: [String: ClaudeCodeRunner] = [:]
+    private var refreshTimer: Timer?
+    private var slowTimer: Timer?
     private var reloadDebounce: Task<Void, Never>?
     private var doneCardCleanupTask: Task<Void, Never>?
     private var started = false
-    private var openCodeProcess: Process?
 
     var hasPendingApproval: Bool {
         !pendingPermissions.isEmpty || !pendingQuestions.isEmpty
@@ -122,10 +139,8 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         sessions.first { $0.id == selectedSessionID }
     }
 
-    var selectedInstanceID: String? {
-        guard let s = selectedSession else { return bridge.primaryInstanceID }
-        return s.instanceID ?? bridge.primaryInstanceID
-    }
+    var needsAuth: Bool { authState == .needsAuth }
+    var claudeMissing: Bool { claudeBinary.isEmpty }
 
     // MARK: Lifecycle
 
@@ -138,271 +153,97 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         if !ok {
             NSLog("[Agent] failed to start bridge server")
         }
-        AgentPluginInstaller.ensureInstalled()
-        loadModelsFromConfig()
-        launchOpenCodeIfNeeded(force: false)
+        AgentHookInstaller.ensureInstalled()
+        refreshEnvironment()
+        loadModels()
+        refreshSessions()
+        startTimers()
+    }
+
+    func deactivate() {
+        stopTimers()
+        bridge.stop()
+        started = false
     }
 
     func restart() {
-        bridge.stop()
-        started = false
+        deactivate()
         activate()
     }
 
-    // MARK: Managed OpenCode launch
-
-    /// Launches OpenCode as a managed, persistent instance so the user can
-    /// chat directly from the panel without starting it themselves. OpenCode
-    /// needs a pseudo-terminal to run its TUI, so we wrap it in `script`.
-    /// `respectAutoLaunch` honours the `aiAgentAutoLaunch` setting; pass false
-    /// to always attempt (e.g. an explicit button tap).
-    func launchManagedOpenCode(respectAutoLaunch: Bool = true) {
-        launchOpenCodeIfNeeded(force: !respectAutoLaunch)
-    }
-
-    private func launchOpenCodeIfNeeded(force: Bool) {
-        guard force || Defaults[.aiAgentAutoLaunch] else { return }
-        guard bridge.primaryInstanceID == nil else { return }
-        guard openCodeProcess == nil || openCodeProcess?.isRunning != true else { return }
-
-        let binary = resolveOpenCodeBinary()
-        guard !binary.isEmpty else {
-            NSLog("[Agent] OpenCode binary not found; cannot launch managed instance")
-            return
+    private func startTimers() {
+        refreshTimer?.invalidate()
+        slowTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refreshSessions() }
         }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/script")
-        process.arguments = ["-q", "/dev/null", binary]
-        let ws = Defaults[.aiAgentWorkspace].isEmpty ? NSHomeDirectory() : Defaults[.aiAgentWorkspace]
-        process.currentDirectoryURL = URL(fileURLWithPath: ws)
-
-        var env = ProcessInfo.processInfo.environment
-        let home = NSHomeDirectory()
-        env["HOME"] = home
-        env["USER"] = NSUserName()
-        env["LOGNAME"] = NSUserName()
-        env["SHELL"] = "/bin/zsh"
-        env["TERM"] = "xterm-256color"
-        env["BORING_NOTCH_MANAGED"] = "1"
-        let extra = (home as NSString).appendingPathComponent(".opencode/bin")
-        let fallbackPath = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        env["PATH"] = [extra, env["PATH"], fallbackPath].compactMap { $0 }.joined(separator: ":")
-        process.environment = env
-
-        process.standardInput = nil
-        process.standardOutput = nil
-        process.standardError = nil
-
-        do {
-            try process.run()
-            openCodeProcess = process
-            NSLog("[Agent] launched managed OpenCode: \(binary) (dir: \(ws))")
-        } catch {
-            NSLog("[Agent] failed to launch OpenCode: \(error)")
+        slowTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshEnvironment()
+                Task { @MainActor [weak self] in self?.loadModels() }
+            }
         }
     }
 
-    private func resolveOpenCodeBinary() -> String {
-        let configured = Defaults[.aiAgentServerBinary]
-        if !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
-            return configured
-        }
-        if let p = which("opencode"), !p.isEmpty, FileManager.default.isExecutableFile(atPath: p) {
-            return p
-        }
-        let common = (NSHomeDirectory() as NSString).appendingPathComponent(".opencode/bin/opencode")
-        if FileManager.default.isExecutableFile(atPath: common) { return common }
-        return ""
+    private func stopTimers() {
+        refreshTimer?.invalidate()
+        refreshTimer = nil
+        slowTimer?.invalidate()
+        slowTimer = nil
     }
 
-    private func which(_ name: String) -> String? {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        p.arguments = [name]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = Pipe()
-        try? p.run()
-        p.waitUntilExit()
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        guard let s = String(data: data, encoding: .utf8) else { return nil }
-        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? nil : t
+    private func refreshEnvironment() {
+        claudeBinary = ClaudeCodeRunner.resolveBinary()
+        authState = ClaudeCodeRunner.authState()
     }
 
-    // MARK: AgentBridgeDelegate
+    // MARK: Sessions refresh (from transcripts + live state)
 
-    func bridge(didRegisterInstance info: AgentInstanceInfo) {
-        everConnected = true
-        refreshInstances()
-        Task { await backfillSessions(instanceID: info.id) }
-        Task { await fetchModels(instanceID: info.id) }
-    }
+    private func refreshSessions() {
+        let summaries = TranscriptStore.scan()
+        let now = Date()
 
-    func bridge(didLoseInstance instanceID: String) {
-        refreshInstances()
-        // Mark sessions owned by the lost instance as stale.
-        for i in sessions.indices where sessions[i].instanceID == instanceID {
-            sessions[i].instanceID = nil
-            if sessions[i].phase == .busy { sessions[i].phase = .idle }
-        }
-        // Drop cards from dead instances.
-        pendingPermissions.removeAll { $0.instanceID == instanceID }
-        pendingQuestions.removeAll { $0.instanceID == instanceID }
-    }
-
-    func bridgeDidUpdateInstances(count: Int) {
-        refreshInstances()
-    }
-
-    private func refreshInstances() {
-        let infos = bridge.instanceInfos
-        instances = infos.sorted { $0.lastSeen > $1.lastSeen }
-        connected = !infos.isEmpty
-    }
-
-    // MARK: Events
-
-    func bridge(didReceiveEvent event: AgentEvent, sessionID: String, instanceID: String) {
-        switch event {
-        case let .sessionStart(sid, directory, title):
-            upsertSession(id: sid, instanceID: instanceID, directory: directory, title: title)
-
-        case let .sessionEnd(sid):
-            sessions.removeAll { $0.id == sid }
-            if selectedSessionID == sid { selectedSessionID = nil }
-
-        case let .sessionTitle(sid, title):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.title = title
+        for summary in summaries {
+            var phase: AgentSession.Phase = .idle
+            if pendingPermissions.contains(where: { $0.sessionID == summary.id }) {
+                phase = .waitingApproval
+            } else if pendingQuestions.contains(where: { $0.sessionID == summary.id }) {
+                phase = .waitingAnswer
+            } else if runners[summary.id] != nil || now.timeIntervalSince(summary.updatedAt) < 25 {
+                phase = .busy
             }
 
-        case let .sessionBusy(sid):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.phase = .busy
-                s.wasBusy = true
-            }
-
-        case let .sessionIdle(sid, reply):
-            var shouldNotify = false
-            var wasBusy = false
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                wasBusy = s.wasBusy
-                s.phase = .idle
-                s.wasBusy = false
-                if let reply, !reply.isEmpty {
-                    s.lastReply = reply
-                    if wasBusy { shouldNotify = true }
-                }
-            }
-            if shouldNotify, let reply, Defaults[.aiAgentNotifyOnDone] {
-                let title = sessions.first { $0.id == sid }?.displayTitle ?? "opencode"
-                let card = AgentDoneCard(sessionID: sid, title: title, reply: reply, instanceID: instanceID)
-                presentDoneCard(card)
-            }
-
-        case let .sessionError(sid, message):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.phase = .errored
-                s.lastReply = message
-                s.wasBusy = false
-            }
-
-        case let .promptSent(sid, text):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.lastPrompt = stripWrappingQuotes(text)
-                s.phase = .busy
-                s.wasBusy = true
-            }
-
-        case let .assistantText(sid, text):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.lastReply = text
-                if s.phase == .idle || s.phase == .waitingAnswer { s.phase = .busy }
-            }
-
-        case let .toolStart(sid, tool, _):
-            upsertSession(id: sid, instanceID: instanceID) { s in
-                s.lastTool = tool
-            }
-
-        case .toolEnd:
-            break
-
-        case let .permissionSettled(sid, requestID):
-            if let rid = requestID {
-                pendingPermissions.removeAll { $0.id == rid }
-                cardDismissedIDs.remove(rid)
+            if let i = sessions.firstIndex(where: { $0.id == summary.id }) {
+                sessions[i].directory = summary.directory.isEmpty ? sessions[i].directory : summary.directory
+                if let t = summary.title, !t.isEmpty { sessions[i].title = t }
+                if let m = summary.model { sessions[i].modelRef = Self.modelRef(forModel: m) }
+                if let p = summary.lastPrompt { sessions[i].lastPrompt = p }
+                if let r = summary.lastReply { sessions[i].lastReply = r }
+                if sessions[i].phase != .errored { sessions[i].phase = phase }
+                sessions[i].updatedAt = summary.updatedAt
             } else {
-                // Some settle event for this session — refresh state.
-                upsertSession(id: sid, instanceID: instanceID) { s in
-                    if s.phase == .waitingApproval { s.phase = .busy }
-                }
-            }
-
-        case let .questionSettled(sid, requestID):
-            if let rid = requestID {
-                pendingQuestions.removeAll { $0.id == rid }
-                cardDismissedIDs.remove(rid)
-            } else {
-                upsertSession(id: sid, instanceID: instanceID) { s in
-                    if s.phase == .waitingAnswer { s.phase = .busy }
-                }
+                sessions.append(AgentSession(
+                    id: summary.id,
+                    directory: summary.directory.isEmpty ? nil : summary.directory,
+                    title: summary.title ?? "",
+                    phase: phase,
+                    source: .external,
+                    lastPrompt: summary.lastPrompt,
+                    lastReply: summary.lastReply,
+                    lastTool: nil,
+                    modelRef: summary.model.map { Self.modelRef(forModel: $0) },
+                    updatedAt: summary.updatedAt))
             }
         }
 
-        // Live chat refresh for the visible conversation.
-        switch event {
-        case .promptSent, .assistantText, .toolStart, .toolEnd:
-            scheduleChatReload()
-        default:
-            break
+        // Drop transcript-only sessions that disappeared from disk.
+        let diskIDs = Set(summaries.map(\.id))
+        sessions.removeAll { session in
+            session.needsFirstPrompt ? false : (!diskIDs.contains(session.id) && runners[session.id] == nil)
         }
-    }
 
-    func bridge(didReceivePermission permission: AgentPendingPermission) {
-        pendingPermissions.append(permission)
-        if let i = sessions.firstIndex(where: { $0.id == permission.sessionID }) {
-            sessions[i].phase = .waitingApproval
-        }
-        presentApprovalCard()
-    }
-
-    func bridge(didReceiveQuestion question: AgentPendingQuestion) {
-        pendingQuestions.append(question)
-        if let i = sessions.firstIndex(where: { $0.id == question.sessionID }) {
-            sessions[i].phase = .waitingAnswer
-        }
-        presentApprovalCard()
-    }
-
-    // MARK: Session store helpers
-
-    private func upsertSession(
-        id: String,
-        instanceID: String?,
-        directory: String? = nil,
-        title: String? = nil,
-        mutate: ((inout AgentSession) -> Void)? = nil
-    ) {
-        if let i = sessions.firstIndex(where: { $0.id == id }) {
-            sessions[i].instanceID = instanceID ?? sessions[i].instanceID
-            if let directory { sessions[i].directory = directory }
-            if let title { sessions[i].title = title }
-            mutate?(&sessions[i])
-            sessions[i].updatedAt = Date()
-        } else {
-            var s = AgentSession(
-                id: id,
-                instanceID: instanceID,
-                title: title ?? "",
-                directory: directory)
-            mutate?(&s)
-            s.updatedAt = Date()
-            sessions.append(s)
-        }
         sortSessions()
+        connected = !instances.isEmpty || !runners.isEmpty
     }
 
     private func sortSessions() {
@@ -421,26 +262,146 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         }
     }
 
-    private func backfillSessions(instanceID: String) async {
-        guard let list: OCSessionList = await bridge.command(
-            on: instanceID, method: "GET", path: "/api/session", as: OCSessionList.self) else { return }
+    // MARK: AgentBridgeDelegate
 
-        let known = Set(sessions.map(\.id))
-        for item in list.data.prefix(30) {
-            if known.contains(item.id) {
-                upsertSession(id: item.id, instanceID: instanceID) { s in
-                    if let t = item.title { s.title = t }
-                    if let m = item.model { s.modelRef = "\(m.providerID)/\(m.id)" }
-                }
-                continue
+    func bridge(didRegisterInstance info: AgentInstanceInfo) {
+        everConnected = true
+        if !instances.contains(where: { $0.id == info.id }) {
+            instances.append(info)
+        }
+        connected = true
+    }
+
+    func bridge(didReceiveEvent event: AgentEvent, sessionID: String) {
+        everConnected = true
+        connected = true
+
+        switch event {
+        case .sessionStarted(_, let directory):
+            upsertSession(id: sessionID) { s in
+                s.directory = directory ?? s.directory
+                if s.phase == .errored { s.phase = .idle }
             }
-            var s = AgentSession(
-                id: item.id,
-                instanceID: instanceID,
-                title: item.title ?? "",
-                directory: item.location?.directory)
-            if let m = item.model { s.modelRef = "\(m.providerID)/\(m.id)" }
-            s.updatedAt = Date(timeIntervalSince1970: (item.time?.updated ?? item.time?.created ?? 0) / 1000)
+
+        case .sessionEnded:
+            // The session transcript persists; mark idle and refresh.
+            upsertSession(id: sessionID) { s in
+                if s.phase != .waitingApproval && s.phase != .waitingAnswer {
+                    s.phase = .idle
+                }
+            }
+            scheduleChatReload()
+
+        case .promptSubmitted(_, let text):
+            upsertSession(id: sessionID) { s in
+                s.lastPrompt = text
+                s.phase = .busy
+            }
+            scheduleChatReload()
+
+        case .toolUsed(_, let tool, let detail):
+            upsertSession(id: sessionID) { s in
+                s.lastTool = tool
+                if let d = detail, !d.isEmpty { s.lastReply = d }
+            }
+
+        case .stopped(_, let reply):
+            var shouldNotify = false
+            upsertSession(id: sessionID) { s in
+                if s.phase == .busy { shouldNotify = true }
+                s.phase = .idle
+                if let reply, !reply.isEmpty { s.lastReply = reply }
+            }
+            if shouldNotify, Defaults[.aiAgentNotifyOnDone] {
+                presentDoneCard(for: sessionID, reply: reply ?? "", attention: false)
+            }
+            scheduleChatReload()
+
+        case .attention(_, let message):
+            upsertSession(id: sessionID) { s in
+                s.phase = .waitingApproval
+            }
+            if Defaults[.aiAgentNotifyOnDone] {
+                presentDoneCard(for: sessionID, reply: message, attention: true)
+            }
+
+        case .errored(_, let message):
+            upsertSession(id: sessionID) { s in
+                s.phase = .errored
+                s.lastReply = message
+            }
+        }
+    }
+
+    func bridge(didReceivePermission permission: AgentPendingPermission) {
+        pendingPermissions.removeAll { $0.id == permission.id }
+        pendingPermissions.append(permission)
+        upsertSession(id: permission.sessionID) { s in
+            s.phase = .waitingApproval
+        }
+    }
+
+    func bridge(didReceiveQuestion question: AgentPendingQuestion) {
+        pendingQuestions.removeAll { $0.id == question.id }
+        pendingQuestions.append(question)
+        upsertSession(id: question.sessionID) { s in
+            s.phase = .waitingAnswer
+        }
+    }
+
+    func bridgeDidExpire(requestID: String) {
+        pendingPermissions.removeAll { $0.id == requestID }
+        pendingQuestions.removeAll { $0.id == requestID }
+        cardDismissedIDs.remove(requestID)
+    }
+
+    func bridgeStateSnapshot() -> AgentJSON {
+        .object([
+            "sessions": .array(sessions.map { s in
+                .object([
+                    "id": .string(s.id),
+                    "project": .string(s.project),
+                    "title": .string(s.displayTitle),
+                    "phase": .string(String(describing: s.phase)),
+                    "source": .string(String(describing: s.source)),
+                    "model": .string(s.modelRef ?? ""),
+                    "lastTool": .string(s.lastTool ?? ""),
+                    "updatedAt": .number(s.updatedAt.timeIntervalSince1970),
+                ])
+            }),
+            "pendingPermissions": .array(pendingPermissions.map { p in
+                .object([
+                    "id": .string(p.id),
+                    "sessionID": .string(p.sessionID),
+                    "tool": .string(p.tool),
+                    "detail": .string(p.detail),
+                ])
+            }),
+            "pendingQuestions": .array(pendingQuestions.map { q in
+                .object([
+                    "id": .string(q.id),
+                    "sessionID": .string(q.sessionID),
+                    "questions": .array(q.questions.map { .string($0.question) }),
+                ])
+            }),
+            "instances": .number(Double(instances.count)),
+            "runningRuns": .number(Double(runners.count)),
+            "connected": .bool(connected),
+            "claudeBinary": .string(claudeBinary),
+            "needsAuth": .bool(needsAuth),
+        ])
+    }
+
+    // MARK: Session store helpers
+
+    private func upsertSession(id: String, mutate: (inout AgentSession) -> Void) {
+        if let i = sessions.firstIndex(where: { $0.id == id }) {
+            mutate(&sessions[i])
+            sessions[i].updatedAt = Date()
+        } else {
+            var s = AgentSession(id: id, directory: nil, title: "")
+            mutate(&s)
+            s.updatedAt = Date()
             sessions.append(s)
         }
         sortSessions()
@@ -448,11 +409,15 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     // MARK: Cards
 
-    private func presentApprovalCard() {
-        // Notification window observes view model directly
-    }
-
-    private func presentDoneCard(_ card: AgentDoneCard) {
+    private func presentDoneCard(for sessionID: String, reply: String, attention: Bool) {
+        // Dedupe: hooks (Stop) and the managed runner can both report completion.
+        if doneCards.contains(where: { $0.sessionID == sessionID }) { return }
+        let title = sessions.first { $0.id == sessionID }?.displayTitle ?? "Claude Code"
+        let card = AgentDoneCard(
+            sessionID: sessionID,
+            title: attention ? "Claude needs you" : title,
+            reply: attention ? "Attention: \(reply)" : reply,
+            isAttention: attention)
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             doneCards.append(card)
         }
@@ -476,18 +441,23 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     func dismissCard(_ id: String) {
         cardDismissedIDs.insert(id)
+        // A dismissed permission card falls through to Claude Code's normal
+        // permission flow (the terminal prompt still works).
+        bridge.fallThrough(requestID: id)
     }
 
     // MARK: Answering permissions / questions
 
     func approve(permission: AgentPendingPermission, always: Bool = false) {
+        if always {
+            // Same tool in this session skips future cards.
+            bridge.allowAlways(sessionID: permission.sessionID, tool: permission.tool)
+        }
         pendingPermissions.removeAll { $0.id == permission.id }
         cardDismissedIDs.remove(permission.id)
-        bridge.respond(
-            to: permission.id,
-            directive: AgentDirective(requestID: permission.id, kind: always ? .always : .allow))
-        if let i = sessions.firstIndex(where: { $0.id == permission.sessionID }) {
-            sessions[i].phase = .busy
+        bridge.respond(requestID: permission.id, decision: .allow)
+        upsertSession(id: permission.sessionID) { s in
+            if s.phase == .waitingApproval { s.phase = .busy }
         }
     }
 
@@ -495,21 +465,19 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         pendingPermissions.removeAll { $0.id == permission.id }
         cardDismissedIDs.remove(permission.id)
         bridge.respond(
-            to: permission.id,
-            directive: AgentDirective(requestID: permission.id, kind: .deny(reason: "Denied from Boring Notch")))
-        if let i = sessions.firstIndex(where: { $0.id == permission.sessionID }) {
-            sessions[i].phase = .idle
+            requestID: permission.id,
+            decision: .deny(reason: "Denied from Boring Notch"))
+        upsertSession(id: permission.sessionID) { s in
+            if s.phase == .waitingApproval { s.phase = .idle }
         }
     }
 
     func answer(question: AgentPendingQuestion, answers: [[String]]) {
         pendingQuestions.removeAll { $0.id == question.id }
         cardDismissedIDs.remove(question.id)
-        bridge.respond(
-            to: question.id,
-            directive: AgentDirective(requestID: question.id, kind: .answer(answers: answers)))
-        if let i = sessions.firstIndex(where: { $0.id == question.sessionID }) {
-            sessions[i].phase = .busy
+        bridge.respond(requestID: question.id, decision: .answers(answers))
+        upsertSession(id: question.sessionID) { s in
+            if s.phase == .waitingAnswer { s.phase = .busy }
         }
     }
 
@@ -517,16 +485,24 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     func openChat(sessionID: String) {
         selectedSessionID = sessionID
-        // Clear any stale busy phase so we don't show "thinking" for a session
-        // that was left mid-generation (e.g. OpenCode closed without idle).
-        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
-            sessions[i].phase = .idle
-            sessions[i].wasBusy = false
-        }
         messages = []
+        chatLoading = true
         Task {
             await loadMessages()
-            await fetchSessionDetail(sessionID: sessionID)
+            chatLoading = false
+        }
+        // Refresh the session's model from its transcript.
+        if let session = sessions.first(where: { $0.id == sessionID }) {
+            let dir = session.directory
+            Task {
+                if let model = TranscriptStore.currentModel(sessionID: sessionID, directory: dir) {
+                    await MainActor.run {
+                        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+                            sessions[i].modelRef = Self.modelRef(forModel: model)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -539,7 +515,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         guard selectedSessionID != nil else { return }
         reloadDebounce?.cancel()
         reloadDebounce = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
+            try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
             await self?.loadMessages()
         }
@@ -547,192 +523,161 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     func loadMessages() async {
         guard let sessionID = selectedSessionID,
-              let instanceID = selectedInstanceID else { return }
-        chatLoading = true
-        defer { chatLoading = false }
-
-        guard let list: OCMessageList = await bridge.command(
-            on: instanceID, method: "GET", path: "/api/session/\(sessionID)/message",
-            as: OCMessageList.self) else {
-            return
+              let session = sessions.first(where: { $0.id == sessionID }) else { return }
+        let parsed = TranscriptStore.messages(sessionID: sessionID, directory: session.directory)
+        if parsed != messages {
+            messages = parsed
         }
-
-        var parsed: [AgentChatMessage] = []
-        for item in list.data.reversed() {
-            if item.type == "user" {
-                if let t = item.text, !t.isEmpty {
-                    parsed.append(AgentChatMessage(id: item.id, role: .user, text: stripWrappingQuotes(t)))
-                }
-            } else if item.type == "assistant" {
-                var text = (item.content ?? [])
-                    .filter { $0.type == "text" }
-                    .compactMap(\.text)
-                    .joined(separator: "\n\n")
-                if text.isEmpty, let err = item.error {
-                    // Surface provider errors inline.
-                    if let msg = err["data"]?["message"]?.string ?? err["message"]?.string {
-                        text = "⚠️ \(msg)"
-                    }
-                }
-                if !text.isEmpty {
-                    parsed.append(AgentChatMessage(id: item.id, role: .assistant, text: text))
-                }
-            }
-        }
-        // De-dupe by id (defensive against API returning repeats).
-        var seen = Set<String>()
-        parsed = parsed.filter { seen.insert($0.id).inserted }
-        messages = parsed
-    }
-
-    /// Fetches the selected session's detail (model + title) so the panel can
-    /// show which model OpenCode is using, even for freshly created sessions.
-    private func fetchSessionDetail(sessionID: String) async {
-        guard let instanceID = selectedInstanceID else { return }
-        let path = "/api/session/\(sessionID)"
-
-        func apply(_ item: OCSessionList.Item) {
-            guard let i = sessions.firstIndex(where: { $0.id == sessionID }) else { return }
-            if let m = item.model { sessions[i].modelRef = "\(m.providerID)/\(m.id)" }
-            if let t = item.title, !t.isEmpty { sessions[i].title = t }
-        }
-
-        if let detail: OCSessionDetail = await bridge.command(
-            on: instanceID, method: "GET", path: path, as: OCSessionDetail.self) {
-            apply(detail.data)
-        } else if let item: OCSessionList.Item = await bridge.command(
-            on: instanceID, method: "GET", path: path, as: OCSessionList.Item.self) {
-            apply(item)
-        }
+        chatLoading = false
     }
 
     func sendPrompt(_ raw: String) async {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty,
-              let sessionID = selectedSessionID,
-              let instanceID = selectedInstanceID else { return }
+        guard !text.isEmpty, let sessionID = selectedSessionID else { return }
         guard !sending else { return }
+        guard runners[sessionID] == nil else { return }
 
+        let session = sessions.first { $0.id == sessionID }
+        let directory = session?.directory
+            ?? (Defaults[.aiAgentWorkspace].isEmpty ? NSHomeDirectory() : Defaults[.aiAgentWorkspace])
+
+        // A notch-created session has no transcript yet: the first run
+        // creates it with --session-id.
+        let isNew = session?.needsFirstPrompt ?? (TranscriptStore.transcriptURL(for: sessionID, directory: directory) == nil)
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[i].needsFirstPrompt = false
             sessions[i].lastPrompt = text
+            sessions[i].phase = .busy
+            sessions[i].source = .managed
+        } else {
+            var s = AgentSession(id: sessionID, directory: directory, title: "")
+            s.lastPrompt = text
+            s.phase = .busy
+            s.source = .managed
+            sessions.append(s)
+            sortSessions()
         }
 
         sending = true
         defer { sending = false }
 
-        let body = AgentJSON.object(["prompt": .object(["text": .string(text)])])
-        let result = await bridge.command(
-            on: instanceID, method: "POST",
-            path: "/api/session/\(sessionID)/prompt", body: body)
-        if !result.ok {
-            messages.append(AgentChatMessage(
-                id: "err-\(UUID().uuidString)", role: .error,
-                text: "Failed to send: \(result.error ?? "status \(result.status)")"))
-            return
+        let runner = ClaudeCodeRunner()
+        runners[sessionID] = runner
+
+        let model = runnerModelAlias(for: sessionID)
+        await runner.run(
+            prompt: text,
+            sessionID: sessionID,
+            isNewSession: isNew,
+            directory: directory,
+            model: model) { [weak self] event in
+            guard let self else { return }
+            switch event {
+            case .assistantText:
+                self.scheduleChatReload()
+            case .toolUsed(let name, let detail):
+                self.upsertSession(id: sessionID) { s in
+                    s.lastTool = name
+                    if let d = detail, !d.isEmpty { s.lastReply = d }
+                }
+                self.scheduleChatReload()
+            case .finished(let reply, let isError, let message):
+                self.runners[sessionID] = nil
+                self.upsertSession(id: sessionID) { s in
+                    s.phase = isError ? .errored : .idle
+                    if isError, let message { s.lastReply = message }
+                }
+                self.scheduleChatReload()
+                if isError, let message {
+                    self.messages.append(AgentChatMessage(
+                        id: "err-\(UUID().uuidString)", role: .error, text: "⚠️ \(message)"))
+                } else if let reply, !reply.isEmpty, Defaults[.aiAgentNotifyOnDone] {
+                    self.presentDoneCard(for: sessionID, reply: reply, attention: false)
+                }
+            }
         }
-        // Refresh immediately so the user's message appears from the source of
-        // truth (avoids an optimistic duplicate); streaming is handled by events.
         await loadMessages()
     }
 
     func interrupt() {
-        guard let sessionID = selectedSessionID,
-              let instanceID = selectedInstanceID else { return }
-        Task {
-            _ = await bridge.command(
-                on: instanceID, method: "POST",
-                path: "/api/session/\(sessionID)/interrupt")
+        guard let sessionID = selectedSessionID else { return }
+        runners[sessionID]?.interrupt()
+        upsertSession(id: sessionID) { s in
+            if s.phase == .busy { s.phase = .idle }
         }
     }
 
     func startNewSession() async {
-        guard let instanceID = bridge.primaryInstanceID else { return }
-        guard let created: OCSessionCreated = await bridge.command(
-            on: instanceID, method: "POST", path: "/api/session",
-            body: .object(["agent": .string("build")]), as: OCSessionCreated.self) else { return }
-        upsertSession(id: created.data.id, instanceID: instanceID, title: "")
-        openChat(sessionID: created.data.id)
+        let id = UUID().uuidString
+        let directory = Defaults[.aiAgentWorkspace].isEmpty ? NSHomeDirectory() : Defaults[.aiAgentWorkspace]
+        var s = AgentSession(id: id, directory: directory, title: "")
+        s.source = .managed
+        s.needsFirstPrompt = true
+        if !Defaults[.aiAgentModel].isEmpty {
+            s.modelRef = Defaults[.aiAgentModel]
+        }
+        sessions.append(s)
+        sortSessions()
+        openChat(sessionID: id)
+    }
+
+    var isSessionRunning: Bool {
+        guard let id = selectedSessionID else { return false }
+        return runners[id] != nil
     }
 
     // MARK: Models
 
-    func fetchModels(instanceID: String) async {
-        // OpenCode's live /api/model endpoint doesn't enumerate custom npm
-        // providers, so seed the list from its config file (authoritative for
-        // what the user can actually pick), then merge anything the API knows.
-        loadModelsFromConfig()
-        guard let list: OCModelList = await bridge.command(
-            on: instanceID, method: "GET", path: "/api/model", as: OCModelList.self) else { return }
-        let live = list.data.filter { $0.status != "deprecated" }
-        guard !live.isEmpty else { return }
-        var merged = Dictionary(uniqueKeysWithValues: availableModels.map { ($0.ref, $0) })
-        for m in live { merged[m.ref] = m }
-        availableModels = merged.values.sorted { ($0.name ?? $0.id) < ($1.name ?? $1.id) }
-    }
-
-    /// Reads the available models from OpenCode's config so the picker works
-    /// even when the runtime API returns an empty list (custom providers).
-    private func loadModelsFromConfig() {
-        let base = (NSHomeDirectory() as NSString).appendingPathComponent(".config/opencode")
-        let candidates = ["opencode.json", "settings.json", "config.json"]
-        var items: [OCModelList.Item] = []
-        for name in candidates {
-            let url = URL(fileURLWithPath: (base as NSString).appendingPathComponent(name))
-            guard let data = try? Data(contentsOf: url),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            guard let providers = obj["provider"] as? [String: [String: Any]] else { continue }
-            for (providerID, pdict) in providers {
-                guard let models = pdict["models"] as? [String: Any] else { continue }
-                for (modelID, mval) in models {
-                    let pretty = (mval as? [String: Any])?["name"] as? String ?? modelID
-                    items.append(OCModelList.Item(id: modelID, providerID: providerID, name: pretty, status: "available"))
-                }
+    /// The Claude Code model aliases, plus whatever the user set as their
+    /// default in settings.json.
+    private func loadModels() {
+        var items: [AgentModel] = [
+            AgentModel(id: "sonnet", providerID: "claude", name: "Sonnet"),
+            AgentModel(id: "opus", providerID: "claude", name: "Opus"),
+            AgentModel(id: "haiku", providerID: "claude", name: "Haiku"),
+            AgentModel(id: "opusplan", providerID: "claude", name: "Opus Plan"),
+        ]
+        // The user's configured default model (settings.json "model").
+        let settingsURL = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+        if let data = FileManager.default.contents(atPath: settingsURLPath),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let configured = obj["model"] as? String, !configured.isEmpty {
+            if !items.contains(where: { $0.id == configured }) {
+                items.append(AgentModel(id: configured, providerID: "claude", name: "Default (settings)"))
             }
         }
-        guard !items.isEmpty else {
-            NSLog("[Agent] no models found in OpenCode config")
-            return
-        }
-        NSLog("[Agent] loaded \(items.count) models from OpenCode config")
-        let existing = Dictionary(uniqueKeysWithValues: availableModels.map { ($0.ref, $0) })
-        var merged = existing
-        for m in items { merged[m.ref] = m }
-        availableModels = merged.values.sorted { ($0.name ?? $0.id) < ($1.name ?? $1.id) }
+        availableModels = items
     }
 
-    func switchModel(_ model: OCModelList.Item) async {
-        guard let sessionID = selectedSessionID,
-              let instanceID = selectedInstanceID else { return }
-        let body = AgentJSON.object([
-            "model": .object([
-                "id": .string(model.id),
-                "providerID": .string(model.providerID),
-            ]),
-        ])
-        let result = await bridge.command(
-            on: instanceID, method: "POST",
-            path: "/api/session/\(sessionID)/model", body: body)
-        if result.ok {
-            if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
-                sessions[i].modelRef = "\(model.providerID)/\(model.id)"
-            }
+    private var settingsURLPath: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
+    }
+
+    func switchModel(_ model: AgentModel) async {
+        guard let sessionID = selectedSessionID else { return }
+        if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+            sessions[i].modelRef = model.ref
         }
     }
 
-    var selectedModel: OCModelList.Item? {
-        guard let session = selectedSession else { return nil }
-        return availableModels.first {
-            $0.providerID + "/" + $0.id == session.modelRef
+    /// Maps a stored "claude/<alias>" ref to the value passed to `--model`.
+    private func runnerModelAlias(for sessionID: String) -> String? {
+        guard let session = sessions.first(where: { $0.id == sessionID }),
+              let ref = session.modelRef, !ref.isEmpty else { return nil }
+        if ref.hasPrefix("claude/") {
+            return String(ref.dropFirst("claude/".count))
         }
+        return ref
     }
-}
 
-// MARK: - Helpers
-
-private func stripWrappingQuotes(_ s: String) -> String {
-    var t = s
-    if t.count > 1 && t.hasPrefix("\"") && t.hasSuffix("\"") {
-        t = String(t.dropFirst().dropLast())
+    var selectedModel: AgentModel? {
+        guard let session = selectedSession, let ref = session.modelRef else { return nil }
+        return availableModels.first { $0.ref == ref }
     }
-    return t
+
+    /// Human-readable model name for a stored ref (e.g. transcript model ids).
+    static func modelRef(forModel model: String) -> String {
+        if model.contains("/") { return model }
+        return "claude/\(model)"
+    }
 }
