@@ -18,7 +18,7 @@ struct AgentApprovalView: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 0) {
             if let question = vm.activeQuestion {
                 AgentQuestionCard(question: question)
             } else if let permission = vm.activePermission {
@@ -30,8 +30,9 @@ struct AgentApprovalView: View {
             }
         }
         .padding(.horizontal, 10)
+        .padding(.top, 8)
         .padding(.bottom, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -88,7 +89,7 @@ private struct AgentCardChrome<Content: View>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color.white.opacity(0.035))
@@ -117,11 +118,11 @@ struct AgentPermissionCard: View {
                     Text(permission.detail)
                         .font(.system(size: 11.5, design: .monospaced))
                         .foregroundStyle(AgentPalette.paper.opacity(0.88))
-                        .lineLimit(3)
-                        .truncationMode(.middle)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .fill(Color.black.opacity(0.35))
@@ -204,14 +205,19 @@ struct AgentQuestionCard: View {
     @ViewBuilder
     private func instantBody(_ q: AgentQuestionItem) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(q.options) { option in
-                optionRow(option, questionID: q.id, instant: true)
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(q.options) { option in
+                        optionRow(option, questionID: q.id, instant: true)
+                    }
+                }
+                .padding(.vertical, 1)
             }
             if q.options.count <= 5 {
                 customField
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Selection mode — pick (possibly several), then confirm
@@ -236,12 +242,15 @@ struct AgentQuestionCard: View {
                     .padding(.vertical, 2)
                 }
             } else if let q = question.questions.first {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(q.options) { option in
-                        optionRow(option, questionID: q.id, instant: false)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(q.options) { option in
+                            optionRow(option, questionID: q.id, instant: false)
+                        }
                     }
-                    customField
+                    .padding(.vertical, 1)
                 }
+                customField
             }
 
             HStack(spacing: 10) {
@@ -263,7 +272,7 @@ struct AgentQuestionCard: View {
                 .disabled(!hasRequiredSelections)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     // MARK: Option row (shared by both modes)
@@ -436,9 +445,9 @@ struct AgentDoneCardView: View {
                 Text(card.reply)
                     .font(.system(size: 12))
                     .foregroundStyle(AgentPalette.paper.opacity(0.9))
-                    .lineLimit(4)
+                    .lineLimit(nil)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(

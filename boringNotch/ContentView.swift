@@ -85,8 +85,9 @@ struct ContentView: View {
     // MARK: Agent surface expansion
 
     /// Extra room the notch gets on agent surfaces, so approval cards and
-    /// the chat panel are actually usable instead of cramped.
-    static let agentApprovalExtraSize = CGSize(width: 160, height: 120)
+    /// the chat panel are actually usable instead of cramped. The approval
+    /// popup keeps the standard notch width — only grows in height.
+    static let agentApprovalExtraSize = CGSize(width: 0, height: 120)
     static let agentChatExtraSize = CGSize(width: 384, height: 230)
 
     private var agentSurfaceExpanded: Bool {
