@@ -187,32 +187,13 @@ struct ContentView: View {
                         }
                     }
                     .onChange(of: agentVM.hasActiveAgentCard) { _, active in
-                        if active {
-                            // Claude needs a decision: open the notch on the
-                            // approval surface (if auto-open is on).
-                            guard Defaults[.aiAgentAutoOpen] else { return }
-                            let wasOpen = vm.notchState == .open
-                            agentOpenedNotch = true
-                            withAnimation(animationSpring) {
-                                if !wasOpen { vm.open() }
-                                coordinator.currentView = .agentApproval
-                            }
-                        } else if agentOpenedNotch {
-                            agentOpenedNotch = false
-                            guard !isHovering else { return }
-                            withAnimation(animationSpring) {
-                                vm.close()
-                            }
-                        }
+                        handleAgentCardActivity(active)
                     }
                     .onChange(of: coordinator.currentView) { _, view in
-                        // Only the agent surfaces host text fields; the panel
-                        // stays key-incapable everywhere else so the notch
-                        // never steals keyboard focus from the active app.
-                        BoringNotchSkyLightWindow.allowsKeyFocus = (view == .agent || view == .agentApproval)
+                        updateAgentKeyFocus(view)
                     }
-                    .onChange(of: vm.isBatteryPopoverActive) {
-                        if !vm.isBatteryPopoverActive && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
+                    .onChange(of: vm.isBatteryPopoverActive) { _, active in
+                        if !active && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
                             scheduleAutoClose()
                         }
                     }
@@ -549,6 +530,33 @@ struct ContentView: View {
     }
 
     // MARK: - Hover Management
+
+    /// Claude needs a decision: open the notch on the approval surface (if
+    /// auto-open is on); close it again once the cards clear.
+    private func handleAgentCardActivity(_ active: Bool) {
+        if active {
+            guard Defaults[.aiAgentAutoOpen] else { return }
+            let wasOpen = vm.notchState == .open
+            agentOpenedNotch = true
+            withAnimation(animationSpring) {
+                if !wasOpen { vm.open() }
+                coordinator.currentView = .agentApproval
+            }
+        } else if agentOpenedNotch {
+            agentOpenedNotch = false
+            guard !isHovering else { return }
+            withAnimation(animationSpring) {
+                vm.close()
+            }
+        }
+    }
+
+    /// Only the agent surfaces host text fields; the panel stays
+    /// key-incapable everywhere else so the notch never steals keyboard
+    /// focus from the active app.
+    private func updateAgentKeyFocus(_ view: NotchViews) {
+        BoringNotchSkyLightWindow.allowsKeyFocus = (view == .agent || view == .agentApproval)
+    }
 
     /// Shared auto-close path: wait a beat, then close the notch if nothing
     /// (hover, popover, sharing) still needs it open. Extracted from three
