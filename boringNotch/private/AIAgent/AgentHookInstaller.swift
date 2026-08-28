@@ -55,11 +55,13 @@ enum AgentHookInstaller {
     cat > "$T" 2>/dev/null
     [ -s "$T" ] || { rm -f "$T" "$O"; exit 0; }
     for P in __PORTS__; do
-      curl -s -m 5 -o "$O" -X POST "http://127.0.0.1:$P/v1/hook" \
-        -H 'Content-Type: application/json' --data-binary @"$T" 2>/dev/null && {
-        rm -f "$T" "$O"
-        exit 0
-      }
+      curl -s -m 3 -o "$O" -X POST "http://127.0.0.1:$P/v1/hook" \
+        -H 'Content-Type: application/json' --data-binary @"$T" 2>/dev/null
+      RC=$?
+      [ "$RC" -eq 0 ] && { rm -f "$T" "$O"; exit 0; }
+      # 28 = the bridge accepted but never answered: the app is up but
+      # stuck, so scanning the remaining ports (same app) is pointless.
+      [ "$RC" -eq 28 ] && break
     done
     rm -f "$T" "$O"
     exit 0
@@ -67,6 +69,9 @@ enum AgentHookInstaller {
 
     /// PreToolUse bridge: holds until the user decides from the notch, then
     /// prints the hookSpecificOutput JSON. Prints nothing to fall through.
+    /// The 40s cap matches the bridge's 30s hold with margin — if the app
+    /// is up but unresponsive, this fails open instead of hanging the tool
+    /// call for minutes.
     static let decideScript = ##"""
     #!/bin/sh
     # Boring Notch <-> Claude Code PreToolUse bridge. Prints the notch's
@@ -78,12 +83,11 @@ enum AgentHookInstaller {
     cat > "$T" 2>/dev/null
     [ -s "$T" ] || { rm -f "$T" "$O"; exit 0; }
     for P in __PORTS__; do
-      curl -s -m 300 -o "$O" -X POST "http://127.0.0.1:$P/v1/hook" \
-        -H 'Content-Type: application/json' --data-binary @"$T" 2>/dev/null && {
-        [ -s "$O" ] && cat "$O"
-        rm -f "$T" "$O"
-        exit 0
-      }
+      curl -s -m 40 -o "$O" -X POST "http://127.0.0.1:$P/v1/hook" \
+        -H 'Content-Type: application/json' --data-binary @"$T" 2>/dev/null
+      RC=$?
+      [ "$RC" -eq 0 ] && { [ -s "$O" ] && cat "$O"; rm -f "$T" "$O"; exit 0; }
+      [ "$RC" -eq 28 ] && break
     done
     rm -f "$T" "$O"
     exit 0

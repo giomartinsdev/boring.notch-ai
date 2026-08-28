@@ -29,26 +29,45 @@ final class ClaudeCodeRunner: @unchecked Sendable {
 
     // MARK: Binary + auth
 
+    private static let lookupLock = NSLock()
+    private static var binaryCache: (path: String, checkedAt: Date)?
+    private static var authCache: (state: ClaudeAuthState, checkedAt: Date)?
+
     /// Locates the claude CLI: settings override, then PATH via `which`,
-    /// then the usual install locations.
+    /// then the usual install locations. The lookup result is cached for a
+    /// minute — `which` forks a process and this runs on a refresh timer.
     static func resolveBinary() -> String {
         let configured = Defaults[.aiAgentClaudeBinary]
         if !configured.isEmpty, FileManager.default.isExecutableFile(atPath: configured) {
             return configured
         }
+
+        lookupLock.lock()
+        if let binaryCache,
+           Date().timeIntervalSince(binaryCache.checkedAt) < 60,
+           binaryCache.path.isEmpty || FileManager.default.isExecutableFile(atPath: binaryCache.path) {
+            lookupLock.unlock()
+            return binaryCache.path
+        }
+        lookupLock.unlock()
+
+        var resolved = ""
         if let p = which("claude"), !p.isEmpty, FileManager.default.isExecutableFile(atPath: p) {
-            return p
+            resolved = p
+        } else {
+            let home = NSHomeDirectory()
+            let candidates = [
+                (home as NSString).appendingPathComponent(".local/bin/claude"),
+                "/opt/homebrew/bin/claude",
+                "/usr/local/bin/claude",
+            ]
+            resolved = candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
         }
-        let home = NSHomeDirectory()
-        let candidates = [
-            (home as NSString).appendingPathComponent(".local/bin/claude"),
-            "/opt/homebrew/bin/claude",
-            "/usr/local/bin/claude",
-        ]
-        for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
-        }
-        return ""
+
+        lookupLock.lock()
+        binaryCache = (resolved, Date())
+        lookupLock.unlock()
+        return resolved
     }
 
     private static func which(_ name: String) -> String? {
@@ -77,28 +96,41 @@ final class ClaudeCodeRunner: @unchecked Sendable {
     }
 
     /// Best-effort auth check: OAuth account, stored credentials, or an API
-    /// key in the environment.
+    /// key in the environment. Cached for a minute.
     static func authState() -> ClaudeAuthState {
+        lookupLock.lock()
+        if let authCache, Date().timeIntervalSince(authCache.checkedAt) < 60 {
+            lookupLock.unlock()
+            return authCache.state
+        }
+        lookupLock.unlock()
+
         let home = NSHomeDirectory()
         let fm = FileManager.default
 
-        // ~/.claude.json carries the OAuth account info.
+        var state = ClaudeAuthState.needsAuth
+        // ~/.claude.json carries the OAuth account info; scan the raw bytes
+        // instead of parsing what can be a large file.
         let claudeJSON = (home as NSString).appendingPathComponent(".claude.json")
         if let data = fm.contents(atPath: claudeJSON),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           obj["oauthAccount"] != nil {
-            return .authenticated
+           data.range(of: Data("\"oauthAccount\"".utf8)) != nil {
+            state = .authenticated
         }
 
-        if fm.fileExists(atPath: (home as NSString).appendingPathComponent(".claude/.credentials.json")) {
-            return .authenticated
+        if state == .needsAuth,
+           fm.fileExists(atPath: (home as NSString).appendingPathComponent(".claude/.credentials.json")) {
+            state = .authenticated
         }
 
-        if ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
-            return .authenticated
+        if state == .needsAuth,
+           ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]?.isEmpty == false {
+            state = .authenticated
         }
 
-        return .needsAuth
+        lookupLock.lock()
+        authCache = (state, Date())
+        lookupLock.unlock()
+        return state
     }
 
     // MARK: Running

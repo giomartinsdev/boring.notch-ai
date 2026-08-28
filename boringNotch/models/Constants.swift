@@ -207,4 +207,8 @@ extension Defaults.Keys {
     static let aiAgentClaudeBinary = Key<String>("aiAgentClaudeBinary", default: "")
     static let aiAgentWorkspace = Key<String>("aiAgentWorkspace", default: "")
     static let aiAgentModel = Key<String>("aiAgentModel", default: "")
+    /// When on, tool calls in every Claude Code session (terminal included)
+    /// hold for a decision from the notch. Off by default: terminal sessions
+    /// keep Claude Code's own permission prompts.
+    static let aiAgentHoldExternalTools = Key<Bool>("aiAgentHoldExternalTools", default: false)
 }

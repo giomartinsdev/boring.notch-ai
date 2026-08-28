@@ -23,6 +23,7 @@
 //
 
 import Foundation
+import Defaults
 import os.log
 
 private let agentBridgeLog = OSLog(subsystem: "com.boringnotch.agent", category: "bridge")
@@ -56,12 +57,19 @@ final class AgentBridgeServer: @unchecked Sendable {
 
     /// How long a PreToolUse decision may sit unanswered before we fall
     /// through to Claude Code's normal permission flow.
-    static let holdTimeout: TimeInterval = 120
+    static let holdTimeout: TimeInterval = 30
 
     private weak var delegate: (any AgentBridgeDelegate)?
     private var listenFD: Int32 = -1
     private var running = false
     private let workQueue = DispatchQueue(label: "boringnotch.agent-bridge", attributes: .concurrent)
+
+    // Sessions the notch itself spawned (managed `claude -p` runs). Only
+    // their tool requests hold for a notch decision; external terminal
+    // sessions pass through instantly so Claude Code's own permission flow
+    // is never delayed.
+    private let managedLock = NSLock()
+    private var managedSessions: Set<String> = []
 
     // Held PreToolUse requests awaiting a user decision.
     private let heldLock = NSLock()
@@ -366,6 +374,13 @@ final class AgentBridgeServer: @unchecked Sendable {
         // Every tool use is surfaced as activity.
         notifyMain(.toolUsed(sessionID: sessionID, tool: tool, detail: detail))
 
+        // Only notch-driven sessions (or, when opted in, every session) hold
+        // for a decision here. External terminal sessions return immediately
+        // so their normal permission flow never waits on the notch.
+        guard isManaged(sessionID) || Defaults[.aiAgentHoldExternalTools] else {
+            return response(status: "200 OK", body: "")
+        }
+
         // "Always allow" from an earlier card skips the hold for this tool.
         heldLock.lock()
         let autoAllowed = alwaysAllowedTools[sessionID]?.contains(tool) ?? false
@@ -431,6 +446,26 @@ final class AgentBridgeServer: @unchecked Sendable {
     }
 
     // MARK: User responses
+
+    /// Marks a session as notch-driven so its tool requests hold for a
+    /// decision from the notch.
+    func markManaged(sessionID: String) {
+        managedLock.lock()
+        managedSessions.insert(sessionID)
+        managedLock.unlock()
+    }
+
+    func clearManaged(sessionID: String) {
+        managedLock.lock()
+        managedSessions.remove(sessionID)
+        managedLock.unlock()
+    }
+
+    private func isManaged(_ sessionID: String) -> Bool {
+        managedLock.lock()
+        defer { managedLock.unlock() }
+        return managedSessions.contains(sessionID)
+    }
 
     /// In-process answer path used by the view model (cards in the notch).
     func respond(requestID: String, decision: AgentDecision) {
@@ -642,12 +677,15 @@ final class AgentBridgeServer: @unchecked Sendable {
     }
 
     /// Best-effort last assistant reply from a session transcript, for the
-    /// Stop-hook done card.
+    /// Stop-hook done card. Reads only the tail of the transcript.
     static func lastAssistantReply(from transcriptPath: String) -> String? {
-        guard let data = FileManager.default.contents(atPath: transcriptPath),
-              let text = String(data: data, encoding: .utf8) else { return nil }
+        let url = URL(fileURLWithPath: transcriptPath)
+        let stat = TranscriptStore.fileStat(url)
+        guard let (_, tail) = TranscriptStore.readHeadAndTail(url: url, size: stat.size) else {
+            return nil
+        }
         var reply: String?
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+        for line in tail.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
             guard line.contains("\"type\":\"assistant\""),
                   let lineData = line.data(using: .utf8),
                   let obj = try? JSONDecoder().decode(AgentJSON.self, from: lineData),

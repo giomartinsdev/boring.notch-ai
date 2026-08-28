@@ -117,6 +117,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     private var reloadDebounce: Task<Void, Never>?
     private var doneCardCleanupTask: Task<Void, Never>?
     private var started = false
+    private var scanInFlight = false
 
     var hasPendingApproval: Bool {
         !pendingPermissions.isEmpty || !pendingQuestions.isEmpty
@@ -199,8 +200,22 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     // MARK: Sessions refresh (from transcripts + live state)
 
+    /// Runs the transcript scan off the main thread — it stats every session
+    /// file and re-reads changed ones — then applies the result on the main
+    /// actor. Overlapping scans are skipped; the next timer tick picks up.
     private func refreshSessions() {
-        let summaries = TranscriptStore.scan()
+        guard !scanInFlight else { return }
+        scanInFlight = true
+        Task.detached(priority: .utility) { [weak self] in
+            let summaries = TranscriptStore.scan()
+            await MainActor.run { [weak self] in
+                self?.applyScan(summaries)
+                self?.scanInFlight = false
+            }
+        }
+    }
+
+    private func applyScan(_ summaries: [TranscriptStore.Summary]) {
         let now = Date()
 
         for summary in summaries {
@@ -524,7 +539,11 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     func loadMessages() async {
         guard let sessionID = selectedSessionID,
               let session = sessions.first(where: { $0.id == sessionID }) else { return }
-        let parsed = TranscriptStore.messages(sessionID: sessionID, directory: session.directory)
+        // Parsing a fresh transcript can mean reading megabytes — keep it off
+        // the main thread.
+        let parsed = await Task.detached(priority: .userInitiated) {
+            TranscriptStore.messages(sessionID: sessionID, directory: session.directory)
+        }.value
         if parsed != messages {
             messages = parsed
         }
@@ -563,6 +582,9 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
         let runner = ClaudeCodeRunner()
         runners[sessionID] = runner
+        // Managed runs decide their tool approvals from the notch; the
+        // bridge only holds requests for sessions marked here.
+        bridge.markManaged(sessionID: sessionID)
 
         let model = runnerModelAlias(for: sessionID)
         await runner.run(
@@ -583,6 +605,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
                 self.scheduleChatReload()
             case .finished(let reply, let isError, let message):
                 self.runners[sessionID] = nil
+                self.bridge.clearManaged(sessionID: sessionID)
                 self.upsertSession(id: sessionID) { s in
                     s.phase = isError ? .errored : .idle
                     if isError, let message { s.lastReply = message }

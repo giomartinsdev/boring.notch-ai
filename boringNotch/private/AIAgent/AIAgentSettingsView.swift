@@ -16,6 +16,7 @@ struct AIAgentSettingsView: View {
     @Default(.aiAgentModel) var defaultModel
     @Default(.aiAgentWorkspace) var workspace
     @Default(.aiAgentClaudeBinary) var claudeBinaryOverride
+    @Default(.aiAgentHoldExternalTools) var holdExternalTools
     @ObservedObject private var vm = AIAgentViewModel.shared
     @State private var hooksInstalled = AgentHookInstaller.isInstalled()
     @State private var killSwitch = AgentHookInstaller.killSwitchEnabled
@@ -105,6 +106,11 @@ struct AIAgentSettingsView: View {
                     .tint(.effectiveAccent)
                 Toggle("Notify when Claude finishes a task", isOn: $notifyOnDone)
                     .tint(.effectiveAccent)
+                Toggle("Approve terminal prompts from the notch", isOn: $holdExternalTools)
+                    .tint(.effectiveAccent)
+                Text("Off: terminal sessions keep Claude Code's normal approval prompts, and the notch only decides for sessions it drives. On: tool calls in every session wait for your decision here (up to 30s).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             // Default model
