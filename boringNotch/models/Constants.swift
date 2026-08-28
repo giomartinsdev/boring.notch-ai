@@ -215,4 +215,7 @@ extension Defaults.Keys {
     /// hold for a decision from the notch. Off by default: terminal sessions
     /// keep Claude Code's own permission prompts.
     static let aiAgentHoldExternalTools = Key<Bool>("aiAgentHoldExternalTools", default: false)
+    /// Prompts queued for busy sessions ([sessionID: [prompt]] as JSON) so
+    /// they survive an app relaunch.
+    static let aiAgentQueuedPrompts = Key<Data>("aiAgentQueuedPrompts", default: Data())
 }

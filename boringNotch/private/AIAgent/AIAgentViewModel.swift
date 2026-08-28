@@ -112,7 +112,10 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     @Published private(set) var availableModels: [AgentModel] = []
     /// Prompts typed while the session is busy in the terminal, keyed by
     /// session; flushed automatically the moment the session goes idle.
-    @Published private(set) var queuedPrompts: [String: [String]] = [:]
+    /// Persisted so an app relaunch doesn't eat messages waiting to send.
+    @Published private(set) var queuedPrompts: [String: [String]] = Self.restoreQueuedPrompts() {
+        didSet { persistQueuedPrompts() }
+    }
 
     private var runners: [String: ClaudeCodeRunner] = [:]
     private var refreshTimer: Timer?
@@ -233,6 +236,20 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     private func applyScan(_ summaries: [TranscriptStore.Summary]) {
         let now = Date()
+
+        // Safety net for queued prompts: the normal trigger is the bridge's
+        // Stop event, but a Stop can get lost (app relaunch, dropped hook
+        // POST). When the periodic scan sees a session that has been quiet
+        // for a while and still has a queue, drain it instead of letting
+        // the messages strand. The 45s quiet bar sits well past the 25s
+        // busy heuristic so a live turn's scan lag can't trigger a
+        // concurrent headless resume.
+        for id in queuedPrompts.keys {
+            guard let s = sessions.first(where: { $0.id == id }),
+                  now.timeIntervalSince(s.updatedAt) > 45,
+                  runners[id] == nil else { continue }
+            flushQueuedPrompt(for: id)
+        }
 
         for summary in summaries {
             var phase: AgentSession.Phase = .idle
@@ -682,6 +699,19 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         return true
     }
 
+    // MARK: Queue persistence
+
+    private func persistQueuedPrompts() {
+        Defaults[.aiAgentQueuedPrompts] = (try? JSONEncoder().encode(queuedPrompts)) ?? Data()
+    }
+
+    private static func restoreQueuedPrompts() -> [String: [String]] {
+        let data = Defaults[.aiAgentQueuedPrompts]
+        guard !data.isEmpty,
+              let map = try? JSONDecoder().decode([String: [String]].self, from: data) else { return [:] }
+        return map
+    }
+
     /// Files a prompt to send once the busy session goes idle.
     private func queuePrompt(_ text: String, sessionID: String) {
         queuedPrompts[sessionID, default: []].append(text)
@@ -699,12 +729,6 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         guard var queue = queuedPrompts[sessionID], !queue.isEmpty else { return }
         let next = queue.removeFirst()
         queuedPrompts[sessionID] = queue.isEmpty ? nil : queue
-        if selectedSessionID == sessionID {
-            messages.append(AgentChatMessage(
-                id: "sending-\(UUID().uuidString)",
-                role: .system,
-                text: "Sending queued message…"))
-        }
         Task { [weak self] in
             // Give the session's own .finished bookkeeping a beat to land,
             // then send. If another send is in flight, requeue for the next
