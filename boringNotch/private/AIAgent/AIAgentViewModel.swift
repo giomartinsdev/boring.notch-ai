@@ -237,20 +237,6 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     private func applyScan(_ summaries: [TranscriptStore.Summary]) {
         let now = Date()
 
-        // Safety net for queued prompts: the normal trigger is the bridge's
-        // Stop event, but a Stop can get lost (app relaunch, dropped hook
-        // POST). When the periodic scan sees a session that has been quiet
-        // for a while and still has a queue, drain it instead of letting
-        // the messages strand. The 45s quiet bar sits well past the 25s
-        // busy heuristic so a live turn's scan lag can't trigger a
-        // concurrent headless resume.
-        for id in queuedPrompts.keys {
-            guard let s = sessions.first(where: { $0.id == id }),
-                  now.timeIntervalSince(s.updatedAt) > 45,
-                  runners[id] == nil else { continue }
-            flushQueuedPrompt(for: id)
-        }
-
         for summary in summaries {
             var phase: AgentSession.Phase = .idle
             if pendingPermissions.contains(where: { $0.sessionID == summary.id }) {
@@ -291,6 +277,18 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         }
 
         sortSessions()
+
+        // Safety net for queued prompts: the normal trigger is the bridge's
+        // Stop event, but a Stop can get lost (app relaunch, dropped hook
+        // POST). When the periodic scan sees an idle session that still has
+        // a queue, drain it instead of letting the messages strand.
+        for id in queuedPrompts.keys {
+            guard let s = sessions.first(where: { $0.id == id }),
+                  s.phase != .busy, s.phase != .waitingApproval, s.phase != .waitingAnswer,
+                  runners[id] == nil else { continue }
+            flushQueuedPrompt(for: id)
+        }
+
         connected = !instances.isEmpty || !runners.isEmpty
     }
 
