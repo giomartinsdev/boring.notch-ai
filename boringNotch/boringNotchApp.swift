@@ -425,9 +425,6 @@ setupDragDetectors()
         // Start the Claude Code bridge and install the hook integration
         AIAgentViewModel.shared.activate()
 
-        // The notification window observes the view model directly and shows/hides automatically
-        _ = AgentNotificationWindowController.shared
-
         if coordinator.firstLaunch {
             DispatchQueue.main.async {
                 self.showOnboardingWindow()

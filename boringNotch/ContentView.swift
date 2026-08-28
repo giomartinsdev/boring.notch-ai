@@ -23,6 +23,8 @@ struct ContentView: View {
     @ObservedObject var batteryModel = BatteryStatusViewModel.shared
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
+    @ObservedObject private var agentVM = AIAgentViewModel.shared
+    @State private var agentOpenedNotch = false
     @State private var hoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
@@ -80,6 +82,27 @@ struct ContentView: View {
         return chinWidth
     }
 
+    // MARK: Agent approval expansion
+
+    /// Extra vertical room the notch gets while showing the agent approval
+    /// surface, so decisions have space for detail text, options and buttons.
+    static let agentApprovalExtraHeight: CGFloat = 120
+
+    private var agentApprovalExpanded: Bool {
+        vm.notchState == .open && coordinator.currentView == .agentApproval
+    }
+
+    private var effectiveOpenHeight: CGFloat {
+        agentApprovalExpanded ? openNotchSize.height + Self.agentApprovalExtraHeight : vm.notchSize.height
+    }
+
+    private var effectiveWindowSize: CGSize {
+        agentApprovalExpanded
+            ? CGSize(width: windowSize.width,
+                     height: openNotchSize.height + Self.agentApprovalExtraHeight + shadowPadding)
+            : windowSize
+    }
+
     var body: some View {
         // Calculate scale based on gesture progress only
         let gestureScale: CGFloat = {
@@ -118,7 +141,7 @@ struct ContentView: View {
                     )
                 
                 mainLayout
-                    .frame(height: vm.notchState == .open ? vm.notchSize.height : nil)
+                    .frame(height: vm.notchState == .open ? effectiveOpenHeight : nil)
                     .conditionalModifier(true) { view in
                         let openAnimation = Animation.spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
                         let closeAnimation = Animation.spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0)
@@ -167,6 +190,25 @@ struct ContentView: View {
                             }
                         }
                     }
+                    .onChange(of: agentVM.hasActiveAgentCard) { _, active in
+                        if active {
+                            // Claude needs a decision: open the notch on the
+                            // approval surface (if auto-open is on).
+                            guard Defaults[.aiAgentAutoOpen] else { return }
+                            let wasOpen = vm.notchState == .open
+                            agentOpenedNotch = true
+                            withAnimation(animationSpring) {
+                                if !wasOpen { vm.open() }
+                                coordinator.currentView = .agentApproval
+                            }
+                        } else if agentOpenedNotch {
+                            agentOpenedNotch = false
+                            guard !isHovering else { return }
+                            withAnimation(animationSpring) {
+                                vm.close()
+                            }
+                        }
+                    }
                     .onChange(of: vm.isBatteryPopoverActive) {
                         if !vm.isBatteryPopoverActive && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {
                             hoverTask?.cancel()
@@ -203,8 +245,9 @@ struct ContentView: View {
             }
         }
         .padding(.bottom, 8)
-        .frame(maxWidth: windowSize.width, maxHeight: windowSize.height, alignment: .top)
+        .frame(maxWidth: effectiveWindowSize.width, maxHeight: effectiveWindowSize.height, alignment: .top)
         .compositingGroup()
+        .background(NotchWindowResizer(targetHeight: effectiveWindowSize.height))
         .scaleEffect(
             x: gestureScale,
             y: gestureScale,
@@ -351,6 +394,8 @@ struct ContentView: View {
                         ShelfView()
                     case .agent:
                         AIAgentPanel()
+                    case .agentApproval:
+                        AgentApprovalView()
                     }
                 }
                 .transition(
@@ -659,4 +704,33 @@ struct GeneralDropTargetDelegate: DropDelegate {
     return ContentView()
         .environmentObject(vm)
         .frame(width: vm.notchSize.width, height: vm.notchSize.height)
+}
+
+/// Keeps the notch panel's height in sync with the SwiftUI content: when the
+/// agent approval surface asks for extra vertical room the (borderless,
+/// fixed-size) window itself grows — anchored to the top edge of the screen —
+/// and shrinks back when the surface goes away.
+private struct NotchWindowResizer: NSViewRepresentable {
+    let targetHeight: CGFloat
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        guard let window = view.window else { return }
+        let current = window.frame.height
+        guard abs(current - targetHeight) > 0.5 else { return }
+
+        var frame = window.frame
+        frame.size.height = targetHeight
+        frame.origin.y -= (targetHeight - current) // keep the top edge fixed
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.35
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            context.allowsImplicitAnimation = true
+            window.setFrame(frame, display: true)
+        }
+    }
 }

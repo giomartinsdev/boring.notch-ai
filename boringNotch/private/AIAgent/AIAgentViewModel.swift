@@ -136,6 +136,19 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         doneCards.first
     }
 
+    /// True while a card worth interrupting the user for is on screen —
+    /// drives the notch auto-open and its vertical expansion.
+    var hasActiveAgentCard: Bool {
+        activePermission != nil || activeQuestion != nil || activeDoneCard != nil
+    }
+
+    /// Attention sound for a card arriving in the notch. Soft ping for
+    /// "Claude wants something", a brighter chime for "Claude is done".
+    private func playArrivalSound(done: Bool) {
+        let name = done ? "Glass" : "Ping"
+        NSSound(named: name)?.play()
+    }
+
     var selectedSession: AgentSession? {
         sessions.first { $0.id == selectedSessionID }
     }
@@ -354,6 +367,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         upsertSession(id: permission.sessionID) { s in
             s.phase = .waitingApproval
         }
+        playArrivalSound(done: false)
     }
 
     func bridge(didReceiveQuestion question: AgentPendingQuestion) {
@@ -362,6 +376,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         upsertSession(id: question.sessionID) { s in
             s.phase = .waitingAnswer
         }
+        playArrivalSound(done: false)
     }
 
     func bridgeDidExpire(requestID: String) {
@@ -436,6 +451,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             doneCards.append(card)
         }
+        playArrivalSound(done: true)
         scheduleDoneCardCleanup()
     }
 

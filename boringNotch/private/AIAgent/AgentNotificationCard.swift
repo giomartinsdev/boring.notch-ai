@@ -2,10 +2,11 @@
 //  AgentNotificationCard.swift
 //  boringNotch
 //
-//  The interactive surfaces shown when the notch opens itself: permission
-//  approvals, agent questions with option lists, and "done" replies with a
-//  quick-reply box. Rendered in the expanded notch without requiring the
-//  user to enter the AI tab.
+//  The in-notch action surface: when Claude needs a decision the notch
+//  expands (see ContentView) and this view renders the top-priority card —
+//  permission approvals with green/red actions, agent questions with
+//  tappable options (single or multi select), and "done" replies with a
+//  quick-reply box. No floating windows involved.
 //
 
 import SwiftUI
@@ -13,20 +14,24 @@ import Defaults
 
 // MARK: - Root surface (picks the top-priority card)
 
-struct AgentNotificationSurface: View {
+struct AgentApprovalView: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 10) {
             if let question = vm.activeQuestion {
                 AgentQuestionCard(question: question)
             } else if let permission = vm.activePermission {
                 AgentPermissionCard(permission: permission)
             } else if let done = vm.activeDoneCard {
                 AgentDoneCardView(card: done)
+            } else {
+                AgentAllClearView()
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -41,50 +46,55 @@ private struct AgentCardChrome<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            // Icon column
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.14))
-                    .frame(width: 40, height: 40)
-                Image(systemName: icon)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint)
-            }
-            .padding(.top, 2)
-
-            // Body
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(AgentPalette.paper)
-                    .lineLimit(1)
-
-                Text(subtitle)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(AgentPalette.paperSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                content
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let onDismiss {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(AgentPalette.paperFaint)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.white.opacity(0.06)))
+        VStack(spacing: 10) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(tint.opacity(0.16))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(tint)
                 }
-                .buttonStyle(.plain)
-                .help("Dismiss (the request stays in the Agent tab)")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AgentPalette.paper)
+                        .lineLimit(1)
+
+                    Text(subtitle)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(AgentPalette.paperSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                if let onDismiss {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(AgentPalette.paperFaint)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(Color.white.opacity(0.07)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss (falls back to the terminal prompt)")
+                }
             }
+
+            content
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.white.opacity(0.035))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1))
+        )
     }
 }
 
@@ -96,45 +106,53 @@ struct AgentPermissionCard: View {
 
     var body: some View {
         AgentCardChrome(
-            tint: .orange,
+            tint: AgentPalette.waiting,
             icon: "hand.raised.fill",
             title: "Claude needs permission",
             subtitle: subtitleText,
             onDismiss: { vm.dismissCard(permission.id) }
         ) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 if !permission.detail.isEmpty {
                     Text(permission.detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(AgentPalette.paper.opacity(0.85))
-                        .lineLimit(2)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(AgentPalette.paper.opacity(0.88))
+                        .lineLimit(3)
                         .truncationMode(.middle)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.white.opacity(0.05))
-                                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1))
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.black.opacity(0.35))
+                                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.07), lineWidth: 1))
                         )
                 }
 
-                HStack(spacing: 8) {
-                    Button("Approve") {
-                        vm.approve(permission: permission)
+                HStack(spacing: 10) {
+                    Button {
+                        vm.deny(permission: permission)
+                    } label: {
+                        Label("Deny", systemImage: "xmark")
                     }
-                    .buttonStyle(AgentPrimaryButtonStyle(tint: AgentPalette.completed))
+                    .buttonStyle(AgentPrimaryButtonStyle(tint: AgentPalette.waitingApproval))
+                    .keyboardShortcut(.cancelAction)
 
-                    Button("Always") {
+                    Button("Always allow") {
                         vm.approve(permission: permission, always: true)
                     }
                     .buttonStyle(AgentSecondaryButtonStyle())
 
-                    Button("Deny") {
-                        vm.deny(permission: permission)
+                    Spacer()
+
+                    Button {
+                        vm.approve(permission: permission)
+                    } label: {
+                        Label("Approve", systemImage: "checkmark")
                     }
-                    .buttonStyle(AgentSecondaryButtonStyle(tint: AgentPalette.waitingApproval))
+                    .buttonStyle(AgentPrimaryButtonStyle(tint: AgentPalette.completed))
+                    .keyboardShortcut(.defaultAction)
                 }
             }
         }
@@ -154,9 +172,16 @@ struct AgentPermissionCard: View {
 struct AgentQuestionCard: View {
     @ObservedObject private var vm = AIAgentViewModel.shared
     let question: AgentPendingQuestion
-    @State private var selected: [String: [String]] = [:]
+
+    // Selection mode (multi-select options or several questions)
+    @State private var selections: [String: Set<String>] = [:]
     @State private var customText = ""
     @State private var submitting = false
+
+    /// Selection mode: several questions, or the question allows multiple picks.
+    private var needsSelection: Bool {
+        question.questions.count > 1 || question.questions.contains { $0.multiple }
+    }
 
     var body: some View {
         AgentCardChrome(
@@ -166,92 +191,146 @@ struct AgentQuestionCard: View {
             subtitle: subtitleText,
             onDismiss: { vm.dismissCard(question.id) }
         ) {
-            VStack(alignment: .leading, spacing: 7) {
-                if question.questions.count == 1, let q = question.questions.first {
-                    questionBody(q)
-                } else {
-                    Text("Multiple questions — answer in the Agent tab or the terminal")
-                        .font(.system(size: 11))
-                        .foregroundStyle(AgentPalette.paperSecondary)
-                }
+            if needsSelection {
+                selectionBody
+            } else if let q = question.questions.first {
+                instantBody(q)
             }
         }
     }
 
+    // MARK: Instant answer — one question, one pick, tap to send
+
     @ViewBuilder
-    private func questionBody(_ q: AgentQuestionItem) -> some View {
-        if q.options.count <= 3 {
-            HStack(spacing: 8) {
-                ForEach(q.options) { option in
-                    Button {
-                        submit(answers: [[option.label]])
-                    } label: {
-                        VStack(spacing: 2) {
-                            Text(option.label)
-                                .font(.system(size: 11.5, weight: .medium))
-                            if !option.detail.isEmpty {
-                                Text(option.detail)
-                                    .font(.system(size: 9.5))
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
-                        }
-                        .foregroundStyle(AgentPalette.paper)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(Color.white.opacity(0.07))
-                                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(submitting)
-                }
+    private func instantBody(_ q: AgentQuestionItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(q.options) { option in
+                optionRow(option, questionID: q.id, instant: true)
+            }
+            if q.options.count <= 5 {
                 customField
             }
-        } else {
-            // Many options — compact list
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 4) {
-                    ForEach(q.options) { option in
-                        Button {
-                            submit(answers: [[option.label]])
-                        } label: {
-                            HStack {
-                                AgentStateDot(color: AgentPalette.paperFaint, pulsing: false, size: 5)
-                                Text(option.label)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Selection mode — pick (possibly several), then confirm
+
+    private var selectionBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if question.questions.count > 1 {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(question.questions) { q in
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(q.question)
                                     .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(AgentPalette.paper)
-                                Spacer()
-                                if !option.detail.isEmpty {
-                                    Text(option.detail)
-                                        .font(.system(size: 9.5))
-                                        .foregroundStyle(AgentPalette.paperFaint)
-                                        .lineLimit(1)
+                                    .foregroundStyle(AgentPalette.paper.opacity(0.85))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                ForEach(q.options) { option in
+                                    optionRow(option, questionID: q.id, instant: false)
                                 }
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color.white.opacity(0.05))
-                            )
                         }
-                        .buttonStyle(.plain)
-                        .disabled(submitting)
                     }
+                    .padding(.vertical, 2)
+                }
+            } else if let q = question.questions.first {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(q.options) { option in
+                        optionRow(option, questionID: q.id, instant: false)
+                    }
+                    customField
                 }
             }
-            .frame(maxHeight: 74)
+
+            HStack(spacing: 10) {
+                Button {
+                    vm.dismissCard(question.id)
+                } label: {
+                    Label("Cancel", systemImage: "xmark")
+                }
+                .buttonStyle(AgentSecondaryButtonStyle(tint: AgentPalette.waitingApproval))
+
+                Spacer()
+
+                Button {
+                    confirmSelection()
+                } label: {
+                    Label("Confirm", systemImage: "checkmark")
+                }
+                .buttonStyle(AgentPrimaryButtonStyle(tint: AgentPalette.completed))
+                .disabled(!hasRequiredSelections)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Option row (shared by both modes)
+
+    private func optionRow(_ option: AgentQuestionOption, questionID: String, instant: Bool) -> some View {
+        let isSelected = selections[questionID]?.contains(option.label) ?? false
+
+        return Button {
+            if instant {
+                submit(answers: [[option.label]])
+            } else {
+                toggle(option.label, questionID: questionID)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if !instant {
+                    ZStack {
+                        Circle()
+                            .strokeBorder(isSelected ? AgentPalette.completed : Color.white.opacity(0.22),
+                                          lineWidth: 1.5)
+                            .frame(width: 16, height: 16)
+                        if isSelected {
+                            Circle()
+                                .fill(AgentPalette.completed)
+                                .frame(width: 16, height: 16)
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 8, weight: .black))
+                                .foregroundStyle(AgentPalette.ink)
+                        }
+                    }
+                } else {
+                    AgentStateDot(color: AgentPalette.paperFaint, pulsing: false, size: 5)
+                }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(AgentPalette.paper)
+                        .lineLimit(1)
+                    if !option.detail.isEmpty {
+                        Text(option.detail)
+                            .font(.system(size: 10))
+                            .foregroundStyle(AgentPalette.paperSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(isSelected ? AgentPalette.completed.opacity(0.14) : Color.white.opacity(0.05))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isSelected ? AgentPalette.completed.opacity(0.45) : Color.white.opacity(0.07),
+                                      lineWidth: 1))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(submitting)
     }
 
     private var customField: some View {
         HStack(spacing: 6) {
-            TextField("Type…", text: $customText)
+            TextField("Other — type your own answer…", text: $customText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11.5))
                 .foregroundStyle(AgentPalette.paper)
@@ -260,19 +339,47 @@ struct AgentQuestionCard: View {
                 submitCustom()
             } label: {
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(customText.isEmpty ? AgentPalette.paperFaint : AgentPalette.paper)
+                    .font(.system(size: 15))
+                    .foregroundStyle(customText.isEmpty ? AgentPalette.paperFaint : AgentPalette.completed)
             }
             .buttonStyle(.plain)
             .disabled(customText.isEmpty)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1))
         )
-        .frame(maxWidth: 150)
+    }
+
+    // MARK: Actions
+
+    private func toggle(_ label: String, questionID: String) {
+        let allowsMultiple = question.questions.first { $0.id == questionID }?.multiple ?? false
+        var set = selections[questionID] ?? []
+        if set.contains(label) {
+            set.remove(label)
+        } else {
+            if !allowsMultiple { set = [] }
+            set.insert(label)
+        }
+        selections[questionID] = set
+    }
+
+    private var hasRequiredSelections: Bool {
+        question.questions.allSatisfy { q in
+            !(selections[q.id] ?? []).isEmpty
+        }
+    }
+
+    private func confirmSelection() {
+        let answers = question.questions.map { q in
+            Array((selections[q.id] ?? []).intersection(Set(q.options.map(\.label))))
+        }
+        submit(answers: answers)
     }
 
     private func submitCustom() {
@@ -322,31 +429,30 @@ struct AgentDoneCardView: View {
             tint: AgentPalette.completed,
             icon: "checkmark.circle.fill",
             title: card.title,
-            subtitle: "finished · tap to reply",
+            subtitle: "finished · tap to open",
             onDismiss: { vm.dismissOldestDoneCard() }
         ) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 Text(card.reply)
-                    .font(.system(size: 11.5))
+                    .font(.system(size: 12))
                     .foregroundStyle(AgentPalette.paper.opacity(0.9))
-                    .lineLimit(3)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.white.opacity(0.045))
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.black.opacity(0.3))
                     )
 
-                HStack(spacing: 6) {
+                HStack(spacing: 10) {
                     Button {
                         openInAgentTab()
                     } label: {
-                        Text("Open")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(AgentPalette.paperSecondary)
+                        Label("Open agent tab", systemImage: "brain")
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AgentSecondaryButtonStyle())
 
                     Spacer()
 
@@ -371,19 +477,19 @@ struct AgentDoneCardView: View {
             } label: {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(replyText.isEmpty ? AgentPalette.paperFaint : AgentPalette.paper)
+                    .foregroundStyle(replyText.isEmpty ? AgentPalette.paperFaint : AgentPalette.completed)
             }
             .buttonStyle(.plain)
             .disabled(replyText.isEmpty)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: 210)
+        .padding(.vertical, 7)
+        .frame(maxWidth: 220)
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.06))
-                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(replyFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.05), lineWidth: 1))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(replyFocused ? Color.white.opacity(0.18) : Color.white.opacity(0.06), lineWidth: 1))
         )
     }
 
@@ -405,31 +511,18 @@ struct AgentDoneCardView: View {
     }
 }
 
-// MARK: - Closed-notch compact indicator
+// MARK: - All clear
 
-/// Small amber indicator shown in the closed notch while an approval is pending.
-struct AgentClosedIndicator: View {
-    @ObservedObject private var vm = AIAgentViewModel.shared
-
+/// Shown when the notch is open on the approval surface but nothing is
+/// pending anymore (the notch closes itself in this state).
+struct AgentAllClearView: View {
     var body: some View {
-        HStack(spacing: 6) {
-            AgentStateDot(color: AgentPalette.waiting, pulsing: true, size: 7)
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(AgentPalette.paper.opacity(0.85))
-            Text("you")
-                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                .foregroundStyle(AgentPalette.paperFaint)
+        VStack(spacing: 6) {
+            AgentStateDot(color: AgentPalette.completed, pulsing: false, size: 8)
+            Text("You're all caught up")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(AgentPalette.paperSecondary)
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-            Capsule().fill(AgentPalette.waiting.opacity(0.16))
-                .overlay(Capsule().strokeBorder(AgentPalette.waiting.opacity(0.35), lineWidth: 1))
-        )
-        .onTapGesture {
-            AgentNotificationWindowController.showIfNeeded()
-        }
-        .help("Claude Code is waiting for you")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
