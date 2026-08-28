@@ -387,30 +387,43 @@ private struct ChatBubble: View {
     let message: AgentChatMessage
 
     var body: some View {
-        HStack {
-            if message.role == .user { Spacer(minLength: 40) }
-
-            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 2) {
-                if message.role != .error {
-                    Text(message.role == .user ? "You" : "Agent")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(AgentPalette.paperFaint)
-                }
+        if message.role == .system {
+            HStack {
+                Spacer()
                 Text(message.text)
-                    .font(.system(size: 11))
-                    .foregroundStyle(message.role == .user ? AgentPalette.paper : AgentPalette.paper.opacity(0.95))
-                    .textSelection(.enabled)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundStyle(AgentPalette.paperFaint)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: 11, style: .continuous)
-                            .fill(message.role == .user
-                                ? Color.white.opacity(0.12)
-                                : Color.white.opacity(0.05))
-                    )
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.05)))
+                Spacer()
             }
+        } else {
+            HStack {
+                if message.role == .user { Spacer(minLength: 40) }
 
-            if message.role == .assistant || message.role == .error { Spacer(minLength: 40) }
+                VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 2) {
+                    if message.role != .error {
+                        Text(message.role == .user ? "You" : "Agent")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(AgentPalette.paperFaint)
+                    }
+                    Text(message.text)
+                        .font(.system(size: 11))
+                        .foregroundStyle(message.role == .user ? AgentPalette.paper : AgentPalette.paper.opacity(0.95))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                .fill(message.role == .user
+                                    ? Color.white.opacity(0.12)
+                                    : Color.white.opacity(0.05))
+                        )
+                }
+
+                if message.role == .assistant || message.role == .error { Spacer(minLength: 40) }
+            }
         }
     }
 }

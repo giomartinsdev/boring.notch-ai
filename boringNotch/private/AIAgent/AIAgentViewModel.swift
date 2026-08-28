@@ -110,6 +110,9 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     @Published private(set) var chatLoading = false
     @Published private(set) var sending = false
     @Published private(set) var availableModels: [AgentModel] = []
+    /// Prompts typed while the session is busy in the terminal, keyed by
+    /// session; flushed automatically the moment the session goes idle.
+    @Published private(set) var queuedPrompts: [String: [String]] = [:]
 
     private var runners: [String: ClaudeCodeRunner] = [:]
     private var refreshTimer: Timer?
@@ -344,6 +347,7 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
                 presentDoneCard(for: sessionID, reply: reply ?? "", attention: false)
             }
             scheduleChatReload()
+            flushQueuedPrompt(for: sessionID)
 
         case .attention(_, let message):
             upsertSession(id: sessionID) { s in
@@ -557,9 +561,22 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
               let session = sessions.first(where: { $0.id == sessionID }) else { return }
         // Parsing a fresh transcript can mean reading megabytes — keep it off
         // the main thread.
-        let parsed = await Task.detached(priority: .userInitiated) {
+        var parsed = await Task.detached(priority: .userInitiated) {
             TranscriptStore.messages(sessionID: sessionID, directory: session.directory)
         }.value
+        // The queue lives outside the transcript, so re-render it after every
+        // reload or it would flicker away on the next refresh.
+        if let queue = queuedPrompts[sessionID], !queue.isEmpty {
+            parsed += queue.enumerated().map { index, text in
+                AgentChatMessage(id: "qmsg-\(index)-\(text)", role: .user, text: text)
+            }
+            parsed.append(AgentChatMessage(
+                id: "qnote-\(queue.count)",
+                role: .system,
+                text: queue.count == 1
+                    ? "1 message queued — sends when Claude finishes the current turn."
+                    : "\(queue.count) messages queued — send when Claude finishes the current turn."))
+        }
         if parsed != messages {
             messages = parsed
         }
@@ -569,8 +586,18 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     func sendPrompt(_ raw: String) async {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let sessionID = selectedSessionID else { return }
-        guard !sending else { return }
-        guard runners[sessionID] == nil else { return }
+        await performSend(text, sessionID: sessionID)
+    }
+
+    /// Sends one prompt into a specific session — whether it's the chat the
+    /// user has open or a background session flushing its queue. Returns
+    /// false when the send was refused (another send in flight), so callers
+    /// can requeue instead of dropping the message.
+    @discardableResult
+    private func performSend(_ text: String, sessionID: String) async -> Bool {
+        guard !text.isEmpty else { return false }
+        guard !sending else { return false }
+        guard runners[sessionID] == nil else { return false }
 
         let session = sessions.first { $0.id == sessionID }
         let directory = session?.directory
@@ -578,13 +605,18 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
         // A session that is running in the user's terminal cannot accept a
         // headless resume — it would fork the conversation away from the
-        // transcript the chat follows. Block it with a visible reason.
+        // transcript the chat follows. Queue the message instead; the Stop
+        // hook flushes it the moment the session goes idle.
         if session?.phase == .busy, runners[sessionID] == nil {
+            queuePrompt(text, sessionID: sessionID)
+            return true
+        }
+
+        // Echo the user's bubble right away — the transcript only gains the
+        // matching entry once the run starts writing.
+        if selectedSessionID == sessionID {
             messages.append(AgentChatMessage(
-                id: "err-\(UUID().uuidString)",
-                role: .error,
-                text: "⚠️ This session is running in your terminal — wait for it to finish, then send from the notch."))
-            return
+                id: "echo-\(UUID().uuidString)", role: .user, text: text))
         }
 
         // A notch-created session has no transcript yet: the first run
@@ -647,6 +679,42 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
             }
         }
         await loadMessages()
+        return true
+    }
+
+    /// Files a prompt to send once the busy session goes idle.
+    private func queuePrompt(_ text: String, sessionID: String) {
+        queuedPrompts[sessionID, default: []].append(text)
+        if selectedSessionID == sessionID {
+            messages.append(AgentChatMessage(
+                id: "echo-\(UUID().uuidString)", role: .user, text: text))
+            messages.append(AgentChatMessage(
+                id: "queued-\(UUID().uuidString)",
+                role: .system,
+                text: "Queued — sends as soon as Claude finishes the current turn."))
+        }
+    }
+
+    private func flushQueuedPrompt(for sessionID: String) {
+        guard var queue = queuedPrompts[sessionID], !queue.isEmpty else { return }
+        let next = queue.removeFirst()
+        queuedPrompts[sessionID] = queue.isEmpty ? nil : queue
+        if selectedSessionID == sessionID {
+            messages.append(AgentChatMessage(
+                id: "sending-\(UUID().uuidString)",
+                role: .system,
+                text: "Sending queued message…"))
+        }
+        Task { [weak self] in
+            // Give the session's own .finished bookkeeping a beat to land,
+            // then send. If another send is in flight, requeue for the next
+            // idle instead of dropping the message.
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            if await !self.performSend(next, sessionID: sessionID) {
+                self.queuedPrompts[sessionID, default: []].insert(next, at: 0)
+            }
+        }
     }
 
     func interrupt() {
@@ -718,10 +786,13 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
     private func runnerModelAlias(for sessionID: String) -> String? {
         guard let session = sessions.first(where: { $0.id == sessionID }),
               let ref = session.modelRef, !ref.isEmpty else { return nil }
-        if ref.hasPrefix("claude/") {
-            return String(ref.dropFirst("claude/".count))
-        }
-        return ref
+        let alias = ref.hasPrefix("claude/") ? String(ref.dropFirst("claude/".count)) : ref
+        // Only pass models the CLI actually accepts. Transcripts record names
+        // like "glm-5.3-flash" while the router only knows "glm-5.3-flash:cloud" —
+        // an unrecognized alias 404s the whole run, so for anything outside the
+        // known list send without --model and let the session keep its model.
+        guard availableModels.contains(where: { $0.id == alias }) else { return nil }
+        return alias
     }
 
     var selectedModel: AgentModel? {

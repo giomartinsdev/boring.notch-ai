@@ -162,7 +162,7 @@ enum AgentDecision: Equatable {
 // MARK: - A parsed chat message ready for display.
 
 struct AgentChatMessage: Identifiable, Equatable {
-    enum Role { case user, assistant, error }
+    enum Role { case user, assistant, error, system }
     let id: String
     let role: Role
     let text: String
