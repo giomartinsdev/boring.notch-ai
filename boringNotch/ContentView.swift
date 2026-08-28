@@ -85,10 +85,10 @@ struct ContentView: View {
     // MARK: Agent surface expansion
 
     /// Extra room the notch gets on agent surfaces, so approval cards and
-    /// the chat panel are actually usable instead of cramped. The approval
-    /// popup keeps the standard notch width — only grows in height.
+    /// the chat panel are actually usable instead of cramped. Both keep the
+    /// standard notch width — only the height grows.
     static let agentApprovalExtraSize = CGSize(width: 0, height: 120)
-    static let agentChatExtraSize = CGSize(width: 384, height: 230)
+    static let agentChatExtraSize = CGSize(width: 0, height: 230)
 
     private var agentSurfaceExpanded: Bool {
         vm.notchState == .open
@@ -162,13 +162,13 @@ struct ContentView: View {
                     .onTapGesture {
                         doOpen()
                     }
-                    .conditionalModifier(Defaults[.enableGestures]) { view in
+                    .conditionalModifier(Defaults[.enableGestures] && !agentSurfaceExpanded) { view in
                         view
                             .panGesture(direction: .down) { translation, phase in
                                 handleDownGesture(translation: translation, phase: phase)
                             }
                     }
-                    .conditionalModifier(Defaults[.closeGestureEnabled] && Defaults[.enableGestures]) { view in
+                    .conditionalModifier(Defaults[.closeGestureEnabled] && Defaults[.enableGestures] && !agentSurfaceExpanded) { view in
                         view
                             .panGesture(direction: .up) { translation, phase in
                                 handleUpGesture(translation: translation, phase: phase)
