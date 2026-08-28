@@ -204,6 +204,10 @@ extension Defaults.Keys {
     static let aiAgentEnabled = Key<Bool>("aiAgentEnabled", default: true)
     static let aiAgentAutoOpen = Key<Bool>("aiAgentAutoOpen", default: true)
     static let aiAgentNotifyOnDone = Key<Bool>("aiAgentNotifyOnDone", default: true)
+    /// System sound (NSSound name) played when a card needs the user, and
+    /// when a task finishes.
+    static let aiAgentArrivalSound = Key<String>("aiAgentArrivalSound", default: "Ping")
+    static let aiAgentDoneSound = Key<String>("aiAgentDoneSound", default: "Glass")
     static let aiAgentClaudeBinary = Key<String>("aiAgentClaudeBinary", default: "")
     static let aiAgentWorkspace = Key<String>("aiAgentWorkspace", default: "")
     static let aiAgentModel = Key<String>("aiAgentModel", default: "")

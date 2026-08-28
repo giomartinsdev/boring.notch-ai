@@ -17,6 +17,8 @@ struct AIAgentSettingsView: View {
     @Default(.aiAgentWorkspace) var workspace
     @Default(.aiAgentClaudeBinary) var claudeBinaryOverride
     @Default(.aiAgentHoldExternalTools) var holdExternalTools
+    @Default(.aiAgentArrivalSound) var arrivalSound
+    @Default(.aiAgentDoneSound) var doneSound
     @ObservedObject private var vm = AIAgentViewModel.shared
     @State private var hooksInstalled = AgentHookInstaller.isInstalled()
     @State private var killSwitch = AgentHookInstaller.killSwitchEnabled
@@ -113,6 +115,12 @@ struct AIAgentSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            // Sounds
+            Section("Sounds") {
+                soundPickerRow(label: "Claude needs you", binding: $arrivalSound)
+                soundPickerRow(label: "Task finished", binding: $doneSound)
+            }
+
             // Default model
             Section("Default Model") {
                 Picker("Model", selection: $defaultModel) {
@@ -161,6 +169,29 @@ struct AIAgentSettingsView: View {
             hooksInstalled = AgentHookInstaller.isInstalled()
         }
     }
+
+    private func soundPickerRow(label: String, binding: Binding<String>) -> some View {
+        HStack {
+            Picker(label, selection: binding) {
+                ForEach(Self.systemSounds, id: \.self) { sound in
+                    Text(sound).tag(sound)
+                }
+            }
+            Button {
+                NSSound(named: NSSound.Name(binding.wrappedValue))?.play()
+            } label: {
+                Image(systemName: "play.circle")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Preview sound")
+        }
+    }
+
+    static let systemSounds = [
+        "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
+        "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink",
+    ]
 
     @ViewBuilder
     private func environmentRow(label: String, ok: Bool, okText: String, failText: String) -> some View {

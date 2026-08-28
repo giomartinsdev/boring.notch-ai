@@ -88,7 +88,7 @@ struct ContentView: View {
     /// the chat panel are actually usable instead of cramped. Both keep the
     /// standard notch width — only the height grows.
     static let agentApprovalExtraSize = CGSize(width: 0, height: 120)
-    static let agentChatExtraSize = CGSize(width: 0, height: 230)
+    static let agentChatExtraSize = CGSize(width: 0, height: 320)
 
     private var agentSurfaceExpanded: Bool {
         vm.notchState == .open

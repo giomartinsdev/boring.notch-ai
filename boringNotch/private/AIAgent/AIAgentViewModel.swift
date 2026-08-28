@@ -142,11 +142,11 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         activePermission != nil || activeQuestion != nil || activeDoneCard != nil
     }
 
-    /// Attention sound for a card arriving in the notch. Soft ping for
-    /// "Claude wants something", a brighter chime for "Claude is done".
+    /// Attention sound for a card arriving in the notch. Both sounds are
+    /// user-configurable in the agent settings (system sounds by name).
     private func playArrivalSound(done: Bool) {
-        let name = done ? "Glass" : "Ping"
-        NSSound(named: name)?.play()
+        let name = done ? Defaults[.aiAgentDoneSound] : Defaults[.aiAgentArrivalSound]
+        NSSound(named: NSSound.Name(name))?.play()
     }
 
     var selectedSession: AgentSession? {
@@ -576,6 +576,17 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
         let directory = session?.directory
             ?? (Defaults[.aiAgentWorkspace].isEmpty ? NSHomeDirectory() : Defaults[.aiAgentWorkspace])
 
+        // A session that is running in the user's terminal cannot accept a
+        // headless resume — it would fork the conversation away from the
+        // transcript the chat follows. Block it with a visible reason.
+        if session?.phase == .busy, runners[sessionID] == nil {
+            messages.append(AgentChatMessage(
+                id: "err-\(UUID().uuidString)",
+                role: .error,
+                text: "⚠️ This session is running in your terminal — wait for it to finish, then send from the notch."))
+            return
+        }
+
         // A notch-created session has no transcript yet: the first run
         // creates it with --session-id.
         let isNew = session?.needsFirstPrompt ?? (TranscriptStore.transcriptURL(for: sessionID, directory: directory) == nil)
@@ -667,14 +678,18 @@ final class AIAgentViewModel: ObservableObject, AgentBridgeDelegate {
 
     // MARK: Models
 
-    /// The Claude Code model aliases, plus whatever the user set as their
-    /// default in settings.json.
+    /// The Claude Code model aliases, the models routed through the user's
+    /// own provider setup, plus whatever they set as default in settings.json.
     private func loadModels() {
         var items: [AgentModel] = [
             AgentModel(id: "sonnet", providerID: "claude", name: "Sonnet"),
             AgentModel(id: "opus", providerID: "claude", name: "Opus"),
             AgentModel(id: "haiku", providerID: "claude", name: "Haiku"),
             AgentModel(id: "opusplan", providerID: "claude", name: "Opus Plan"),
+            AgentModel(id: "glm-5.3-flash:cloud", providerID: "claude", name: "GLM 5.3 Flash (1M ctx)"),
+            AgentModel(id: "glm-5.2:cloud", providerID: "claude", name: "GLM 5.2 (1M ctx)"),
+            AgentModel(id: "minimax-m3:cloud", providerID: "claude", name: "MiniMax M3 (1M ctx)"),
+            AgentModel(id: "gemma4:26b", providerID: "claude", name: "Gemma 4 26B (local)"),
         ]
         // The user's configured default model (settings.json "model").
         let settingsURL = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/settings.json")
