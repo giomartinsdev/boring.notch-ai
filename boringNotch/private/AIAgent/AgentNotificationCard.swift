@@ -210,9 +210,7 @@ struct AgentQuestionCard: View {
                     .buttonStyle(.plain)
                     .disabled(submitting)
                 }
-                if q.custom {
-                    customField
-                }
+                customField
             }
         } else {
             // Many options — compact list

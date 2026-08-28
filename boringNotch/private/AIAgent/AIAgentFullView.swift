@@ -251,14 +251,12 @@ private struct QuestionCardFull: View {
                             }
                         }
                     }
-                    if q.custom {
-                        HStack {
-                            TextField("Type your answer…", text: $customAnswer, onCommit: submitCustom)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Send") { submitCustom() }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(customAnswer.trimmingCharacters(in: .whitespaces).isEmpty)
-                        }
+                    HStack {
+                        TextField("Type your answer…", text: $customAnswer, onCommit: submitCustom)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Send") { submitCustom() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(customAnswer.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                 }
                 .padding(.horizontal, 12)

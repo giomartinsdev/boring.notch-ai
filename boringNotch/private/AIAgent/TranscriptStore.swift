@@ -39,17 +39,19 @@ enum TranscriptStore {
     /// Scans all project transcripts, most recently updated first.
     static func scan(limit: Int = 40) -> [Summary] {
         let fm = FileManager.default
+        let dirKeys: [URLResourceKey] = [.contentModificationDateKey]
         guard let projectDirs = try? fm.contentsOfDirectory(
-            at: projectsRoot, includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipHiddenFiles]) else { return [] }
+            at: projectsRoot, includingPropertiesForKeys: dirKeys,
+            options: [.skipsHiddenFiles]) else { return [] }
 
         var files: [(url: URL, modified: Date)] = []
         for dir in projectDirs where dir.hasDirectoryPath {
             guard let sessionFiles = try? fm.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-                options: [.skipHiddenFiles]) else { continue }
+                at: dir, includingPropertiesForKeys: dirKeys,
+                options: [.skipsHiddenFiles]) else { continue }
             for file in sessionFiles where file.pathExtension == "jsonl" {
-                let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?
+                let modKeys: Set<URLResourceKey> = [.contentModificationDateKey]
+                let modified = (try? file.resourceValues(forKeys: modKeys))?
                     .contentModificationDate ?? Date.distantPast
                 files.append((file, modified))
             }
@@ -163,7 +165,7 @@ enum TranscriptStore {
         }
         // Search all project folders for the session file.
         guard let projectDirs = try? fm.contentsOfDirectory(
-            at: projectsRoot, includingPropertiesForKeys: nil, options: [.skipHiddenFiles]) else {
+            at: projectsRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
             return nil
         }
         for dir in projectDirs {
